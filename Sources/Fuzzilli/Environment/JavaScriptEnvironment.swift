@@ -379,6 +379,7 @@ public class JavaScriptEnvironment: ComponentBase {
         registerObjectGroup(.jsIteratorConstructor)
         registerObjectGroup(.jsGenerators)
         registerObjectGroup(.jsPromises)
+        registerObjectGroup(.jsCompartments)
         registerObjectGroup(.jsRegExps)
         registerObjectGroup(.jsFunctions)
         registerObjectGroup(.jsFunctionPrototype)
@@ -427,6 +428,7 @@ public class JavaScriptEnvironment: ComponentBase {
         registerObjectGroup(.jsPromiseConstructor)
         registerObjectGroup(.jsPromisePrototype)
         registerObjectGroup(.jsProxyConstructor)
+        registerObjectGroup(.jsCompartmentConstructor)
         registerObjectGroup(.jsArrayConstructor)
         registerObjectGroup(.jsStringConstructor)
         registerObjectGroup(.jsStringPrototype)
@@ -725,6 +727,7 @@ public class JavaScriptEnvironment: ComponentBase {
         registerBuiltin("DataView", ofType: .jsDataViewConstructor)
         registerBuiltin("Date", ofType: .jsDateConstructor)
         registerBuiltin("Promise", ofType: .jsPromiseConstructor)
+        registerBuiltin("Compartment", ofType: .jsCompartmentConstructor)
         registerBuiltin("Proxy", ofType: .jsProxyConstructor)
         registerBuiltin("Map", ofType: .jsMapConstructor)
         registerBuiltin("WeakMap", ofType: .jsWeakMapConstructor)
@@ -1302,6 +1305,9 @@ extension ILType {
     public static let jsPromise = ILType.object(
         ofGroup: "Promise", withMethods: ["catch", "finally", "then"])
 
+    /// Type of a JavaScript Compartment object.
+    static let jsCompartment = ILType.object(ofGroup: "Compartment", withProperties: ["globalThis"], withMethods: ["evaluate", "import", "importNow", "module"])
+
     /// Type of a JavaScript Map object.
     public static let jsMap =
         ILType.iterable()
@@ -1354,7 +1360,7 @@ extension ILType {
         ofGroup: "ArrayBuffer", withProperties: ["byteLength", "maxByteLength", "resizable"],
         withMethods: [
             "resize", "slice", "sliceToImmutable", "transfer", "transferToFixedLength",
-            "transferToImmutable",
+            "transferToImmutable", "concat",
         ])
 
     /// Type of a JavaScript SharedArrayBuffer object.
@@ -1438,7 +1444,7 @@ extension ILType {
         ILType.functionAndConstructor([.jsAnything] => .jsString)
         + .object(
             ofGroup: "StringConstructor", withProperties: ["prototype"],
-            withMethods: ["fromCharCode", "fromCodePoint", "raw"])
+            withMethods: ["fromCharCode", "fromCodePoint", "raw", "fromArrayBuffer"])
 
     /// Type of the JavaScript Boolean constructor builtin.
     public static let jsBooleanConstructor =
@@ -1470,7 +1476,7 @@ extension ILType {
         ILType.function([.number] => .bigint)
         + .object(
             ofGroup: "BigIntConstructor", withProperties: ["prototype"],
-            withMethods: ["asIntN", "asUintN"])
+            withMethods: ["asIntN", "asUintN", "bitLength", "fromArrayBuffer"])
 
     /// Type of the JavaScript RegExp constructor builtin.
     public static let jsRegExpConstructor =
@@ -1509,7 +1515,7 @@ extension ILType {
         ILType.constructor([.integer, .opt(.object())] => .jsArrayBuffer)
         + .object(
             ofGroup: "ArrayBufferConstructor", withProperties: ["prototype"],
-            withMethods: ["isView"])
+            withMethods: ["isView", "fromBigInt", "fromString"])
 
     /// Type of the JavaScript SharedArrayBuffer constructor builtin.
     public static let jsSharedArrayBufferConstructor =
@@ -1543,6 +1549,9 @@ extension ILType {
             withMethods: [
                 "resolve", "reject", "all", "any", "race", "allSettled", "try", "withResolvers",
             ])
+
+    /// Type of the JavaScript Compartment constructor builtin.
+    static let jsCompartmentConstructor = ILType.constructor([.function()] => .jsCompartment) + .object(ofGroup: "CompartmentConstructor", withProperties: ["prototype"], withMethods: [])
 
     /// Type of the JavaScript Proxy constructor builtin.
     public static let jsProxyConstructor =
@@ -1599,6 +1608,7 @@ extension ILType {
             "expm1", "clz32", "cos", "cosh", "exp", "floor", "fround", "f16round", "hypot", "imul",
             "log", "log1p", "log2", "log10", "max", "min", "pow", "random", "round", "sign", "sin",
             "sinh", "sqrt", "sumPrecise", "tan", "tanh", "trunc",
+            "idiv", "idivmod", "imod", "imul", "imuldiv", "irem", "irandom"
         ])
 
     /// Type of the JavaScript Atomics builtin.
@@ -2042,6 +2052,21 @@ extension ObjectGroup {
             "compile": [.string] => .jsRegExp,
             "exec": [.string] => .jsArray,
             "test": [.string] => .boolean,
+        ]
+    )
+
+    /// Object group modelling JavaScript compartments.
+    static let jsCompartments = ObjectGroup(
+        name: "Compartment",
+        instanceType: .jsCompartment,
+        properties: [
+            "globalThis"  : .object()
+        ],
+        methods: [  // import/importNow can accept more than strings
+            "import"    : [.string] => .jsPromise,
+            "importNow" : [.string] => .anything,
+            "module"    : [.opt(.string)] => .object(),
+            "evaluate"  : [.string] => .anything,
         ]
     )
 
@@ -2849,6 +2874,7 @@ extension ObjectGroup {
             "fromCharCode": [.jsAnything...] => .jsString,
             "fromCodePoint": [.jsAnything...] => .jsString,
             "raw": [.jsAnything...] => .jsString,
+            "fromArrayBuffer": [.object(ofGroup: "ArrayBuffer")] => .jsString,
         ]
     )
 
@@ -2891,6 +2917,7 @@ extension ObjectGroup {
         methods: [
             "asIntN": [.number, .bigint] => .bigint,
             "asUintN": [.number, .bigint] => .bigint,
+            "fromArrayBuffer" : [.object(ofGroup: "ArrayBuffer")] => .bigint,
         ]
     )
 
@@ -3014,6 +3041,13 @@ extension ObjectGroup {
             "tan": [.jsAnything] => .number,
             "tanh": [.jsAnything] => .number,
             "trunc": [.jsAnything] => .number,
+
+            "idiv": [.anything, .anything] => .integer,
+            "idivmod": [.anything, .anything] => .integer,
+            "imod": [.anything, .anything] => .integer,
+            "imuldiv": [.anything, .anything, .anything] => .integer,
+            "irem": [.anything, .anything] => .integer,
+            "irandom": [.anything] => .integer,
         ]
     )
 
