@@ -123,7 +123,7 @@ fileprivate let CompartmentGenerator = RecursiveCodeGenerator("CompartmentGenera
     }
 }
 
-fileprivate let UnicodeStringGenerator = CodeGenerator("UnicodeStringGenerator", inputs: .required(.object())) { b, obj in
+fileprivate let UnicodeStringGenerator = CodeGenerator("UnicodeStringGenerator") { b in
     var s = ""
     for _ in 0..<Int.random(in: 1...100) {
         let codePoint = UInt32.random(in: 0..<0x10FFFF)
@@ -135,6 +135,87 @@ fileprivate let UnicodeStringGenerator = CodeGenerator("UnicodeStringGenerator",
         }
     }
     b.loadString(s)
+}
+
+let hexValues = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "A", "B", "C", "D", "E", "F"]
+
+fileprivate let HexGenerator = CodeGenerator("HexGenerator") { b in
+    let Uint8Array = b.loadBuiltin("Uint8Array")
+
+    withEqualProbability({
+            var s = ""
+            for _ in 0..<Int.random(in: 1...10) {
+                s += chooseUniform(from: hexValues)
+                s += chooseUniform(from: hexValues)
+            }
+            let hex = b.loadString(s)
+
+            if (Int.random(in: 0...20) < 10) {      // can't use withEqualProbability here?
+                b.callMethod("fromHex", on: Uint8Array, withArgs: [hex])
+            }
+            else {
+                let target = b.construct(Uint8Array, withArgs: [b.loadInt(Int64.random(in: 0...0x100))])
+                b.callMethod("setFromHex", on: target, withArgs: [hex])
+            }
+        }, {
+            var values = [Variable]()
+            for _ in 0..<Int.random(in: 1...20) {
+                values.append(b.loadInt(Int64.random(in: 0...0xFF)))
+            }
+
+            let bytes = b.callMethod("of", on: Uint8Array, withArgs: values)
+            b.callMethod("toHex", on: bytes, withArgs: [])
+        }
+    )
+}
+
+let base64Alphabet = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "/"]
+let base64URLAlphabet = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-", "_"]
+
+fileprivate let Base64Generator = CodeGenerator("Base64Generator") { b in
+    let Uint8Array = b.loadBuiltin("Uint8Array")
+
+    withEqualProbability({
+            var options = [String: Variable]()
+            var alphabet = chooseUniform(from: [base64Alphabet, base64URLAlphabet])
+
+            options["alphabet"] = b.loadString((alphabet == base64Alphabet) ? "base64" : "base64url")
+            options["lastChunkHandling"] = b.loadString(
+                chooseUniform(
+                    from: ["loose", "strict", "stop-before-partial"]
+                )
+            )
+
+            var s = ""
+            for _ in 0..<Int.random(in: 1...128) {
+                s += chooseUniform(from: alphabet)
+            }
+
+            if (Int.random(in: 0...20) < 10) {
+                while (0 != (s.count % 4)) {
+                    s += "=";
+                }
+            }
+            let base64 = b.loadString(s)
+
+            let optionsObject = b.createObject(with: options)
+            if (Int.random(in: 0...20) < 10) {      // can't use withEqualProbability here?
+                b.callMethod("fromBase64", on: Uint8Array, withArgs: [base64, optionsObject])
+            }
+            else {
+                let target = b.construct(Uint8Array, withArgs: [b.loadInt(Int64.random(in: 0...0x100))])
+                b.callMethod("setFromBase64", on: target, withArgs: [base64, optionsObject])
+            }
+        }, {
+            var values = [Variable]()
+            for _ in 0..<Int.random(in: 1...64) {
+                values.append(b.loadInt(Int64.random(in: 0...0xFF)))
+            }
+
+            let bytes = b.callMethod("of", on: Uint8Array, withArgs: values)
+            b.callMethod("toBase64", on: bytes, withArgs: [])
+        }
+    )
 }
 
 /*
@@ -344,7 +425,9 @@ let xsProfile = Profile(
         (HardenGenerator, 5),
         (CompartmentGenerator, 5),
         (UnicodeStringGenerator, 2),
-        (ModuleSourceGenerator, 3)
+        (ModuleSourceGenerator, 3),
+        (HexGenerator, 3),
+        (Base64Generator, 3)
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
