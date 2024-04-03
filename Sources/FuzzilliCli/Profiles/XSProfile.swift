@@ -18,7 +18,6 @@ import Fuzzilli
 // swift run -c release FuzzilliCli --profile=xs --jobs=8 --storagePath=./results --resume --timeout=200 $MODDABLE/build/bin/mac/debug/xst
 
 fileprivate let StressXSGC = CodeGenerator("StressXSGC", inputs: .required(.function())) { b, f in
-    guard b.type(of: f).Is(.function()) else { return }        //@@ where did this come from??
     let arguments = b.randomArguments(forCalling: f)
 
     let index = b.loadInt(1)
@@ -29,15 +28,13 @@ fileprivate let StressXSGC = CodeGenerator("StressXSGC", inputs: .required(.func
         b.callFunction(f, withArgs: arguments)
         b.unary(.PostInc, index)
         let result = b.callFunction(gc, withArgs: [index])
-        b.buildIfElse(result, ifBody: {
+        b.buildIf(result) {
             b.loopBreak();
-        }, elseBody: {
-        });
+        }
     }
 }
 
 fileprivate let StressXSMemoryFail = CodeGenerator("StressXSMemoryFail", inputs: .required(.function())) { b, f in
-    guard b.type(of: f).Is(.function()) else { return }        //@@ where did this come from??
     let arguments = b.randomArguments(forCalling: f)
 
     let index = b.loadInt(1)
@@ -57,9 +54,9 @@ fileprivate let StressXSMemoryFail = CodeGenerator("StressXSMemoryFail", inputs:
 fileprivate let HardenGenerator = CodeGenerator("HardenGenerator", inputs: .required(.object())) { b, obj in
     let harden = b.loadBuiltin("harden")
 
-    if (Int.random(in: 0...20) < 1) {
+    if probability(0.05) {
         let lockdown = b.loadBuiltin("lockdown")
-        b.callFunction(lockdown, withArgs: [])
+        b.callFunction(lockdown)
     }
     b.callFunction(harden, withArgs: [obj])
 }
@@ -107,7 +104,7 @@ fileprivate let CompartmentGenerator = RecursiveCodeGenerator("CompartmentGenera
     options["loadNowHook"] = loadNowHook;
     options["loadHook"] = loadHook;
 
-    if (Int.random(in: 0...100) < 50) {
+    if probability(0.5) {
         options["globalLexicals"] = endowmentsObject
         endowmentsObject = b.createObject(with: [:]) 
     }
@@ -115,7 +112,7 @@ fileprivate let CompartmentGenerator = RecursiveCodeGenerator("CompartmentGenera
 
     let compartment = b.construct(compartmentConstructor, withArgs: [endowmentsObject, moduleMapObject, optionsObject])
 
-    if (Int.random(in: 0...100) < 50) {
+    if probability(0.5) {
         let code = b.buildCodeString() {
             b.buildRecursive(block: 4, of: 4)
         }
@@ -150,7 +147,7 @@ fileprivate let HexGenerator = CodeGenerator("HexGenerator") { b in
             }
             let hex = b.loadString(s)
 
-            if (Int.random(in: 0...20) < 10) {      // can't use withEqualProbability here?
+            if probability(0.5) {
                 b.callMethod("fromHex", on: Uint8Array, withArgs: [hex])
             }
             else {
@@ -191,7 +188,7 @@ fileprivate let Base64Generator = CodeGenerator("Base64Generator") { b in
                 s += chooseUniform(from: alphabet)
             }
 
-            if (Int.random(in: 0...20) < 10) {
+            if probability(0.5) {
                 while (0 != (s.count % 4)) {
                     s += "=";
                 }
@@ -199,7 +196,7 @@ fileprivate let Base64Generator = CodeGenerator("Base64Generator") { b in
             let base64 = b.loadString(s)
 
             let optionsObject = b.createObject(with: options)
-            if (Int.random(in: 0...20) < 10) {      // can't use withEqualProbability here?
+            if probability(0.5) {
                 b.callMethod("fromBase64", on: Uint8Array, withArgs: [base64, optionsObject])
             }
             else {
@@ -218,20 +215,14 @@ fileprivate let Base64Generator = CodeGenerator("Base64Generator") { b in
     )
 }
 
-/*
-The inputs to this aren't filtered to jsCompartment but seem to be any just .object()
-That's not very useful, so leaving this disabled until that is sorted out
-
-fileprivate let CompartmentEvaluateGenerator = CodeGenerator("CompartmentEvaluateGenerator", inputs: .required(.jsCompartment)) { b, target in
+fileprivate let CompartmentEvaluateGenerator = CodeGenerator("CompartmentEvaluateGenerator", inputs: .required(.object(ofGroup: "Compartment"))) { b, target in
     let code = b.buildCodeString() {
         b.buildRecursive()
     }
     b.callMethod("evaluate", on: target, withArgs: [code])
 }
-*/
 
-// This template fuzzes the RegExp engine.
-// It finds bugs like: crbug.com/1437346 and crbug.com/1439691.
+// this template taken from V8Profile.swift (with light modifications for XS)
 fileprivate let RegExpFuzzer = ProgramTemplate("RegExpFuzzer") { b in
     // Taken from: https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:v8/test/fuzzer/regexp-builtins.cc;l=212;drc=a61b95c63b0b75c1cfe872d9c8cdf927c226046e
     let twoByteSubjectString = "f\\uD83D\\uDCA9ba\\u2603"
@@ -319,13 +310,13 @@ fileprivate let RegExpFuzzer = ProgramTemplate("RegExpFuzzer") { b in
         b.doReturn(resultVar)
     }
 
-    b.eval("%SetForceSlowPath(false)");
+    // b.eval("%SetForceSlowPath(false)");
     // compile the regexp once
     b.callFunction(f)
     let resFast = b.callFunction(f)
-    b.eval("%SetForceSlowPath(true)");
+    // b.eval("%SetForceSlowPath(true)");
     let resSlow = b.callFunction(f)
-    b.eval("%SetForceSlowPath(false)");
+    // b.eval("%SetForceSlowPath(false)");
 
     b.build(n: 15)
 }
@@ -334,11 +325,11 @@ public extension ILType {
     /// Type of a JavaScript Compartment object.
     static let jsCompartment = ILType.object(ofGroup: "Compartment", withProperties: ["globalThis"], withMethods: ["evaluate", "import", "importNow" /* , "module" */])
 
-    static let jsCompartmentConstructor = ILType.constructor([.function()] => .jsCompartment) + .object(ofGroup: "CompartmentConstructor", withProperties: ["prototype"], withMethods: [])
+    static let jsCompartmentConstructor = ILType.constructor([.opt(.object()), .opt(.object()), .opt(.object())] => .jsCompartment) + .object(ofGroup: "CompartmentConstructor", withProperties: ["prototype"], withMethods: [])
 
     static let jsModuleSource = ILType.object(ofGroup: "ModuleSource", withProperties: ["bindings", "needsImport", "needsImportMeta"])
 
-    static let jsModuleSourceConstructor = ILType.constructor([.function()] => .jsModuleSource) + .object(ofGroup: "ModuleSourceConstructor", withProperties: ["prototype"], withMethods: [])
+    static let jsModuleSourceConstructor = ILType.constructor([.opt(.string)] => .jsModuleSource) + .object(ofGroup: "ModuleSourceConstructor", withProperties: ["prototype"], withMethods: [])
 }
 
 /// Object group modelling JavaScript compartments.
@@ -420,14 +411,15 @@ let xsProfile = Profile(
     ],
 
     additionalCodeGenerators: [
-        (StressXSMemoryFail,    5),
-        (StressXSGC,    5),
-        (HardenGenerator, 5),
-        (CompartmentGenerator, 5),
-        (UnicodeStringGenerator, 2),
-        (ModuleSourceGenerator, 3),
-        (HexGenerator, 3),
-        (Base64Generator, 3)
+        (StressXSMemoryFail,            5),
+        (StressXSGC,                    5),
+        (HardenGenerator,               5),
+        (CompartmentGenerator,          5),
+        (CompartmentEvaluateGenerator,  5),
+        (UnicodeStringGenerator,        2),
+        (ModuleSourceGenerator,         3),
+        (HexGenerator,                  2),
+        (Base64Generator,               2),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
@@ -444,12 +436,12 @@ let xsProfile = Profile(
         "print"               : .function([.string] => .undefined),
 
         // hardened javascript
-        "Compartment"         : .function([] => .jsCompartmentConstructor),
-        "ModuleSource"        : .function([] => .jsModuleSourceConstructor),
-        "harden"              : .function([.plain(.anything)] => .undefined),
+        "Compartment"         : .function([.opt(.object()), .opt(.object()), .opt(.object())] => .jsCompartmentConstructor),
+        "ModuleSource"        : .function([.opt(.string)] => .jsModuleSourceConstructor),
+        "harden"              : .function([.object()] => .object()),
         "lockdown"            : .function([] => .undefined) ,
-        "petrify"             : .function([.plain(.anything)] => .undefined),
-        "mutabilities"        : .function([.plain(.anything)] => .object())
+        "petrify"             : .function([.anything] => .anything),
+        "mutabilities"        : .function([.object()] => .object())
     ],
 
     additionalObjectGroups: [jsCompartments, jsCompartmentConstructor, jsModuleSources, jsModuleSourceConstructor],
