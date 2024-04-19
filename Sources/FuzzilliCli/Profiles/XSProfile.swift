@@ -1,4 +1,4 @@
-// Copyright 2019-2022 Google LLC
+// Copyright 2019-2024 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -84,7 +84,7 @@ fileprivate let CompartmentGenerator = RecursiveCodeGenerator("CompartmentGenera
     }
     var endowmentsObject = b.createObject(with: endowments)
 
-//@@ populate a moduleMap
+	// to do: populate moduleMap
     let moduleMapObject = b.createObject(with: moduleMap)
     let resolveHook = b.buildPlainFunction(with: .parameters(n: 2)) { _ in
         b.buildRecursive(block: 1, of: 4)
