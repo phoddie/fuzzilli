@@ -421,7 +421,8 @@ let v8Profile = Profile(
             "--jit-fuzzing",
             "--future",
             "--harmony",
-            "--js-staging"
+            "--js-staging",
+            "--wasm-staging"
         ]
 
         guard randomize else { return args }
@@ -514,6 +515,9 @@ let v8Profile = Profile(
         if probability(0.1) {
             args.append("--stress-ic")
         }
+        if probability(0.1) {
+            args.append("--optimize-on-next-call-optimizes-to-maglev")
+        }
 
         //
         // More exotic configuration changes.
@@ -523,6 +527,9 @@ let v8Profile = Profile(
             if probability(0.5) { args.append("--lazy-new-space-shrinking") }
             if probability(0.5) { args.append("--const-tracking-let") }
             if probability(0.5) { args.append("--stress-wasm-memory-moving") }
+            if probability(0.5) { args.append("--stress-background-compile") }
+            if probability(0.5) { args.append("--parallel-compile-tasks-for-lazy") }
+            if probability(0.5) { args.append("--parallel-compile-tasks-for-eager-toplevel") }
 
             args.append(probability(0.5) ? "--always-sparkplug" : "--no-always-sparkplug")
             args.append(probability(0.5) ? "--always-osr" : "--no-always-osr")
@@ -531,6 +538,7 @@ let v8Profile = Profile(
 
             // Maglev related flags
             args.append(probability(0.5) ? "--maglev-inline-api-calls" : "--no-maglev-inline-api-calls")
+            if probability(0.5) { args.append("--maglev-extend-properties-backing-store") }
 
             // Compiler related flags
             args.append(probability(0.5) ? "--always-turbofan" : "--no-always-turbofan")
@@ -584,6 +592,8 @@ let v8Profile = Profile(
         ("fuzzilli('FUZZILLI_CRASH', 2)", .shouldCrash),
         // Wild-write
         ("fuzzilli('FUZZILLI_CRASH', 3)", .shouldCrash),
+        // Check that DEBUG is defined.
+        ("fuzzilli('FUZZILLI_CRASH', 8)", .shouldCrash),
 
         // TODO we could try to check that OOM crashes are ignored here ( with.shouldNotCrash).
     ],
