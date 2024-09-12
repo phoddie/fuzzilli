@@ -40,6 +40,7 @@ public let codeGeneratorWeights = [
     "ArgumentsAccessGenerator":                 3,
     "FunctionWithArgumentsAccessGenerator":     2,
     "BuiltinGenerator":                         10,
+    "BuiltinOverwriteGenerator":                3,
     "LoadNewTargetGenerator":                   3,
 
     "ObjectLiteralGenerator":                   10,
@@ -188,4 +189,7 @@ public let codeGeneratorWeights = [
     "IteratorGenerator":                        5,
     "ConstructWithDifferentNewTargetGenerator": 5,
     "ObjectHierarchyGenerator":                 10,
+    "ApiConstructorCallGenerator":              15,
+    "ApiMethodCallGenerator":                   15,
+    "ApiFunctionCallGenerator":                 15,
 ]

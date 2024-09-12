@@ -105,6 +105,14 @@ fileprivate let GcGenerator = CodeGenerator("GcGenerator") { b in
     b.callFunction(gc, withArgs: [b.createObject(with: ["type": type, "execution": execution])])
 }
 
+fileprivate let WasmStructGenerator = CodeGenerator("WasmStructGenerator") { b in
+    b.eval("%WasmStruct()", hasOutput: true);
+}
+
+fileprivate let WasmArrayGenerator = CodeGenerator("WasmArrayGenerator") { b in
+    b.eval("%WasmArray()", hasOutput: true);
+}
+
 fileprivate let MapTransitionFuzzer = ProgramTemplate("MapTransitionFuzzer") { b in
     // This template is meant to stress the v8 Map transition mechanisms.
     // Basically, it generates a bunch of CreateObject, GetProperty, SetProperty, FunctionDefinition,
@@ -479,6 +487,10 @@ let v8Profile = Profile(
             args.append("--turboshaft-typed-optimizations")
         }
 
+        if probability(0.1) && !args.contains("--no-turboshaft") {
+            args.append("--turboshaft-from-maglev")
+        }
+
         if probability(0.1) {
             args.append("--harmony-struct")
         }
@@ -606,6 +618,9 @@ let v8Profile = Profile(
 
         (WorkerGenerator,                         10),
         (GcGenerator,                             10),
+
+        (WasmStructGenerator,                     15),
+        (WasmArrayGenerator,                      15),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
@@ -620,7 +635,7 @@ let v8Profile = Profile(
 
     additionalBuiltins: [
         "gc"                                            : .function([] => (.undefined | .jsPromise)),
-        "d8"                                            : .object(),
+        "d8"                                            : .object(withProperties: ["test"]),
         "Worker"                                        : .constructor([.anything, .object()] => .object(withMethods: ["postMessage","getMessage"])),
     ],
 
