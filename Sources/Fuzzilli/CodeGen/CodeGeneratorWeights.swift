@@ -25,6 +25,7 @@ public let codeGeneratorWeights = [
     "BooleanGenerator":                         2,
     "UndefinedGenerator":                       1,
     "NullGenerator":                            1,
+    "NamedVariableGenerator":                   10,
     "ArrayGenerator":                           10,
     "FloatArrayGenerator":                      10,
     "IntArrayGenerator":                        10,
@@ -85,6 +86,7 @@ public let codeGeneratorWeights = [
     "TemplateStringGenerator":                  1,
     "StringNormalizeGenerator":                 1,
     "PlainFunctionGenerator":                   15,
+    "StrictModeFunctionGenerator":              3,
     "ArrowFunctionGenerator":                   3,
     "GeneratorFunctionGenerator":               3,
     "AsyncFunctionGenerator":                   3,
@@ -133,9 +135,6 @@ public let codeGeneratorWeights = [
     "DestructObjectAndReassignGenerator":       5,
     "WithStatementGenerator":                   3,
     "ComparisonGenerator":                      10,
-    "NamedVariableLoadGenerator":               3,
-    "NamedVariableStoreGenerator":              3,
-    "NamedVariableDefinitionGenerator":         3,
     "SuperMethodCallGenerator":                 20,
 
     // These will only be used inside class methods, and only if private properties were previously declared in that class.
