@@ -61,6 +61,11 @@ fileprivate let HardenGenerator = CodeGenerator("HardenGenerator", inputs: .requ
     b.callFunction(harden, withArgs: [obj])
 }
 
+fileprivate let MarshallGenerator = CodeGenerator("MarshallGenerator", inputs: .required(.object())) { b, obj in
+    let doMarshall = b.createNamedVariable(forBuiltin: "doMarshall")
+	b.callFunction(doMarshall, withArgs: [obj])
+}
+
 fileprivate let ModuleSourceGenerator = RecursiveCodeGenerator("ModuleSourceGenerator") { b in
     let moduleSourceConstructor = b.createNamedVariable(forBuiltin: "ModuleSource")
 
@@ -424,6 +429,7 @@ let xsProfile = Profile(
         (ModuleSourceGenerator,         3),
         (HexGenerator,                  2),
         (Base64Generator,               2),
+        (MarshallGenerator,             2),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
@@ -438,6 +444,7 @@ let xsProfile = Profile(
         "gc"                  : .function([] => .undefined),
         "memoryFail"          : .function([.number] => .number),
         "print"               : .function([.string] => .undefined),
+        "doMarshall"          : .function([.object()] => .object()),
 
         // hardened javascript
         "Compartment"         : .function([.opt(.object()), .opt(.object()), .opt(.object())] => .jsCompartmentConstructor),
