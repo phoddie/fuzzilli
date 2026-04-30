@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+	swift run FuzzilliCli --profile=xs --jobs=8 --storagePath=./results --inspect=history --timeout=100 --resume $MODDABLE/build/bin/mac/debug/xst
+	swift run -c release FuzzilliCli --profile=xs --jobs=8 --storagePath=./results --timeout=100 --resume $MODDABLE/build/bin/mac/debug/xst
+*/
+ 
 private let StressXSGC = CodeGenerator("StressXSGC", inputs: .required(.function())) { b, f in
     let arguments = b.randomArguments(forCalling: f)
 
