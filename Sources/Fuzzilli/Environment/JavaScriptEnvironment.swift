@@ -379,7 +379,6 @@ public class JavaScriptEnvironment: ComponentBase {
         registerObjectGroup(.jsIteratorConstructor)
         registerObjectGroup(.jsGenerators)
         registerObjectGroup(.jsPromises)
-        registerObjectGroup(.jsCompartments)
         registerObjectGroup(.jsRegExps)
         registerObjectGroup(.jsFunctions)
         registerObjectGroup(.jsFunctionPrototype)
@@ -428,7 +427,6 @@ public class JavaScriptEnvironment: ComponentBase {
         registerObjectGroup(.jsPromiseConstructor)
         registerObjectGroup(.jsPromisePrototype)
         registerObjectGroup(.jsProxyConstructor)
-        registerObjectGroup(.jsCompartmentConstructor)
         registerObjectGroup(.jsArrayConstructor)
         registerObjectGroup(.jsStringConstructor)
         registerObjectGroup(.jsStringPrototype)
@@ -727,7 +725,6 @@ public class JavaScriptEnvironment: ComponentBase {
         registerBuiltin("DataView", ofType: .jsDataViewConstructor)
         registerBuiltin("Date", ofType: .jsDateConstructor)
         registerBuiltin("Promise", ofType: .jsPromiseConstructor)
-        registerBuiltin("Compartment", ofType: .jsCompartmentConstructor)
         registerBuiltin("Proxy", ofType: .jsProxyConstructor)
         registerBuiltin("Map", ofType: .jsMapConstructor)
         registerBuiltin("WeakMap", ofType: .jsWeakMapConstructor)
@@ -1305,9 +1302,6 @@ extension ILType {
     public static let jsPromise = ILType.object(
         ofGroup: "Promise", withMethods: ["catch", "finally", "then"])
 
-    /// Type of a JavaScript Compartment object.
-    static let jsCompartment = ILType.object(ofGroup: "Compartment", withProperties: ["globalThis"], withMethods: ["evaluate", "import", "importNow", "module"])
-
     /// Type of a JavaScript Map object.
     public static let jsMap =
         ILType.iterable()
@@ -1549,9 +1543,6 @@ extension ILType {
             withMethods: [
                 "resolve", "reject", "all", "any", "race", "allSettled", "try", "withResolvers",
             ])
-
-    /// Type of the JavaScript Compartment constructor builtin.
-    static let jsCompartmentConstructor = ILType.constructor([.function()] => .jsCompartment) + .object(ofGroup: "CompartmentConstructor", withProperties: ["prototype"], withMethods: [])
 
     /// Type of the JavaScript Proxy constructor builtin.
     public static let jsProxyConstructor =
@@ -2055,21 +2046,6 @@ extension ObjectGroup {
         ]
     )
 
-    /// Object group modelling JavaScript compartments.
-    static let jsCompartments = ObjectGroup(
-        name: "Compartment",
-        instanceType: .jsCompartment,
-        properties: [
-            "globalThis"  : .object()
-        ],
-        methods: [  // import/importNow can accept more than strings
-            "import"    : [.string] => .jsPromise,
-            "importNow" : [.string] => .anything,
-            "module"    : [.opt(.string)] => .object(),
-            "evaluate"  : [.string] => .anything,
-        ]
-    )
-
     /// Object group modelling JavaScript arrays
     public static let jsArrays = ObjectGroup(
         name: "Array",
@@ -2508,6 +2484,7 @@ extension ObjectGroup {
             "transfer": [.opt(.integer)] => .jsArrayBuffer,
             "transferToFixedLength": [.opt(.integer)] => .jsArrayBuffer,
             "transferToImmutable": [.opt(.integer)] => .jsArrayBuffer,
+            "concat": [.plain(.jsArrayBuffer)] => .jsArrayBuffer,
         ]
     )
 
@@ -2841,7 +2818,9 @@ extension ObjectGroup {
             "prototype": jsArrayBufferPrototype.instanceType
         ],
         methods: [
-            "isView": [.jsAnything] => .boolean
+            "isView": [.jsAnything] => .boolean,
+            "fromBigInt": [.bigint] => .jsArrayBuffer,
+            "fromString": [.string] => .jsArrayBuffer,
         ]
     )
 
@@ -2918,6 +2897,7 @@ extension ObjectGroup {
             "asIntN": [.number, .bigint] => .bigint,
             "asUintN": [.number, .bigint] => .bigint,
             "fromArrayBuffer" : [.object(ofGroup: "ArrayBuffer")] => .bigint,
+            "bitLength": [.bigint] => .number,
         ]
     )
 
@@ -3042,12 +3022,12 @@ extension ObjectGroup {
             "tanh": [.jsAnything] => .number,
             "trunc": [.jsAnything] => .number,
 
-            "idiv": [.anything, .anything] => .integer,
-            "idivmod": [.anything, .anything] => .integer,
-            "imod": [.anything, .anything] => .integer,
-            "imuldiv": [.anything, .anything, .anything] => .integer,
-            "irem": [.anything, .anything] => .integer,
-            "irandom": [.anything] => .integer,
+            "idiv": [.jsAnything, .jsAnything] => .integer,
+            "idivmod": [.jsAnything, .jsAnything] => .integer,
+            "imod": [.jsAnything, .jsAnything] => .integer,
+            "imuldiv": [.jsAnything, .jsAnything, .jsAnything] => .integer,
+            "irem": [.jsAnything, .jsAnything] => .integer,
+            "irandom": [.jsAnything] => .integer,
         ]
     )
 
