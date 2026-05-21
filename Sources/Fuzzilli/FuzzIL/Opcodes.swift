@@ -366,4 +366,11 @@ enum Opcode {
     case beginBundleScript(BeginBundleScript)
     case endBundleScript(EndBundleScript)
     case blockBreak(BlockBreak)
+    case rawWasmModule(RawWasmModule)
+    case beginBundleModule(BeginBundleModule)
+    case endBundleModule(EndBundleModule)
+    case exportVariables(ExportVariables)
+    case importVariables(ImportVariables)
+    case beginBundleModuleEntryPoint(BeginBundleModuleEntryPoint)
+    case endBundleModuleEntryPoint(EndBundleModuleEntryPoint)
 }

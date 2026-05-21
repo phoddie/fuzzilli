@@ -28,7 +28,9 @@ struct VariadicInputReducer: Reducer {
                 let newOp: Operation
                 switch instr.op.opcode {
                 case .createArray(let op):
-                    newOp = CreateArray(numInitialValues: op.numInitialValues - 1)
+                    newOp = CreateArray(
+                        numInitialValues: op.numInitialValues - 1,
+                        elementGroupName: op.elementGroupName)
                 case .createArrayWithSpread(let op):
                     newOp = CreateArrayWithSpread(spreads: op.spreads.dropLast())
                 case .callFunction(let op):
@@ -91,6 +93,9 @@ struct VariadicInputReducer: Reducer {
                     // Reduction of unused outputs (and therefore reduction of the corresponding
                     // inputs) is done by the WasmTypeGroupReducer (as it requires further tracking
                     // e.g. of output usages.)
+                    break loop
+                case .exportVariables(_):
+                    // TODO(marja): Implement
                     break loop
                 default:
                     fatalError("Unknown variadic operation \(instr.op)")

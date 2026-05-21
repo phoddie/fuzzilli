@@ -2050,7 +2050,8 @@ public let CodeGenerators: [CodeGenerator] = [
             b.hide(Map)
             iterable = b.construct(Map)
             for _ in 0..<topLevelIterableSize {
-                // The key and the value don't need to be iterables themselves, any values will do.
+                // A Map is an iterable that yields [key, value] arrays, which are themselves iterables;
+                // so here the key and the value may be anything.
                 let key = b.randomJsVariable()
                 let value = b.randomJsVariable()
                 b.callMethod("set", on: iterable, withArgs: [key, value])
@@ -2058,13 +2059,30 @@ public let CodeGenerators: [CodeGenerator] = [
         }
 
         let iteratorConstructor = b.createNamedVariable(forBuiltin: "Iterator")
-        let arguments: [Variable]
-        if probability(0.5) {
-            arguments = [iterable]
-        } else {
-            arguments = [iterable, b.createOptionsBag(.jsIteratorZipSettings)]
-        }
+        let arguments =
+            probability(0.5)
+            ? [iterable]
+            : [iterable, b.createOptionsBag(.jsIteratorZipSettings)]
         b.callMethod("zip", on: iteratorConstructor, withArgs: arguments)
+    },
+
+    CodeGenerator("IteratorZipKeyedGenerator", inputs: .one) { b, val in
+        // Create an object whose values are iterables
+        let topLevelIterableSize = Int.random(in: 0...10)
+        let keyedIterables = b.buildObjectLiteral { obj in
+            for _ in 0..<topLevelIterableSize {
+                let propertyName = b.randomPropertyName()
+                let iterable = b.randomVariable(ofType: .iterable()) ?? val
+                obj.addProperty(propertyName, as: iterable)
+            }
+        }
+
+        let iteratorConstructor = b.createNamedVariable(forBuiltin: "Iterator")
+        let arguments =
+            probability(0.5)
+            ? [keyedIterables]
+            : [keyedIterables, b.createOptionsBag(.jsIteratorZipSettings)]
+        b.callMethod("zipKeyed", on: iteratorConstructor, withArgs: arguments)
     },
 
     CodeGenerator(
@@ -3422,4 +3440,65 @@ public let CodeGenerators: [CodeGenerator] = [
                 b.emit(EndBundleScript())
             },
         ]),
+
+    CodeGenerator(
+        "BundleModuleEntryPointGenerator",
+        [
+            GeneratorStub(
+                "BundleModuleEntryPointBeginGenerator",
+                inContext: .single(.bundle),
+                provides: [.moduleTopLevel, .javascript]
+            ) { b in
+                b.beginBundleModuleEntryPoint()
+                b.buildPrefix()
+                // Add at least one import to make the entry point more interesting.
+                b.generateImport()
+            },
+            GeneratorStub(
+                "BundleModuleEntryPointEndGenerator",
+                inContext: .single([.moduleTopLevel, .javascript]),
+            ) { b in
+                b.endBundleModuleEntryPoint()
+            },
+        ]),
+
+    CodeGenerator(
+        "BundleModuleGenerator",
+        [
+            GeneratorStub(
+                "BundleModuleBeginGenerator",
+                inContext: .single(.bundle),
+                provides: [.moduleTopLevel, .javascript]
+            ) { b in
+                let moduleName = "module\(b.indexOfNextInstruction()).mjs"
+                b.beginBundleModule(name: moduleName)
+                b.buildPrefix()
+            },
+            GeneratorStub(
+                "BundleModuleEndGenerator",
+                inContext: .single([.moduleTopLevel, .javascript]),
+            ) { b in
+                // Generate one export at the end to ensure there are at least some exports.
+                b.generateExport()
+                _ = b.endBundleModule()
+            },
+        ]),
+
+    CodeGenerator("ModuleImportGenerator", inContext: .single(.moduleTopLevel)) { b in
+        // TODO(marja): Add more complex imports:
+        // - Importing the default export
+        // - Non-named exports (import {v1})
+        // - Importing and creating a Module object
+        // - Dynamic imports (also in scripts)
+        b.generateImport()
+    },
+
+    CodeGenerator("ModuleExportGenerator", inContext: .single(.moduleTopLevel)) { b in
+        // TODO(marja): Add more complex exports:
+        // - Default exports
+        // - Non-named exports (export {v1, v2})
+        // - Exports from another module
+        // - Multiple modules exporting a variable with the same name
+        b.generateExport()
+    },
 ]

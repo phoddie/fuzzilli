@@ -744,8 +744,12 @@ extension Instruction: ProtobufConvertible {
                 }
             case .endClassDefinition:
                 $0.endClassDefinition = Fuzzilli_Protobuf_EndClassDefinition()
-            case .createArray:
-                $0.createArray = Fuzzilli_Protobuf_CreateArray()
+            case .createArray(let op):
+                $0.createArray = Fuzzilli_Protobuf_CreateArray.with {
+                    if let elementGroupName = op.elementGroupName {
+                        $0.elementGroupName = elementGroupName
+                    }
+                }
             case .createIntArray(let op):
                 $0.createIntArray = Fuzzilli_Protobuf_CreateIntArray.with { $0.values = op.values }
             case .createFloatArray(let op):
@@ -1200,6 +1204,26 @@ extension Instruction: ProtobufConvertible {
                 $0.beginBundleScript = Fuzzilli_Protobuf_BeginBundleScript()
             case .endBundleScript:
                 $0.endBundleScript = Fuzzilli_Protobuf_EndBundleScript()
+            case .beginBundleModule(let op):
+                $0.beginBundleModule = Fuzzilli_Protobuf_BeginBundleModule.with {
+                    $0.moduleName = op.moduleName
+                }
+            case .endBundleModule(let op):
+                $0.endBundleModule = Fuzzilli_Protobuf_EndBundleModule.with {
+                    $0.moduleName = op.moduleName
+                }
+            case .beginBundleModuleEntryPoint:
+                $0.beginBundleModuleEntryPoint = Fuzzilli_Protobuf_BeginBundleModuleEntryPoint()
+            case .endBundleModuleEntryPoint:
+                $0.endBundleModuleEntryPoint = Fuzzilli_Protobuf_EndBundleModuleEntryPoint()
+            case .exportVariables(let op):
+                $0.exportVariables = Fuzzilli_Protobuf_ExportVariables.with {
+                    $0.exportNames = op.exportNames
+                }
+            case .importVariables(let op):
+                $0.importVariables = Fuzzilli_Protobuf_ImportVariables.with {
+                    $0.importNames = op.importNames
+                }
             case .print(_):
                 fatalError("Print operations should not be serialized")
             // Wasm Operations
@@ -1731,6 +1755,32 @@ extension Instruction: ProtobufConvertible {
                 $0.wasmAnyConvertExtern = Fuzzilli_Protobuf_WasmAnyConvertExtern()
             case .wasmExternConvertAny(_):
                 $0.wasmExternConvertAny = Fuzzilli_Protobuf_WasmExternConvertAny()
+            case .rawWasmModule(let op):
+                $0.rawWasmModule = Fuzzilli_Protobuf_RawWasmModule.with {
+                    $0.bytes = Data(op.bytes)
+                    $0.metadata = Fuzzilli_Protobuf_WasmModuleMetadata.with { meta in
+                        meta.functions = op.metadata.functions.map { f in
+                            Fuzzilli_Protobuf_WasmFunctionExport.with {
+                                $0.name = f.name
+                                $0.signature = Fuzzilli_Protobuf_JSSignature.with { sig in
+                                    sig.parameterTypes = f.signature.parameters.map { param in
+                                        switch param {
+                                        case .plain(let t), .opt(let t):
+                                            return ILTypeToJSTypeEnum(t)
+                                        case .rest(_):
+                                            fatalError(
+                                                "Rest parameters are not expected in Wasm exports")
+                                        }
+                                    }
+                                    sig.returnType = ILTypeToJSTypeEnum(f.signature.outputType)
+                                }
+                            }
+                        }
+                        meta.globals = op.metadata.globals
+                        meta.tables = op.metadata.tables
+                        meta.tags = op.metadata.tags
+                    }
+                }
             }
         }
 
@@ -2083,8 +2133,10 @@ extension Instruction: ProtobufConvertible {
             op = EndClassPrivateMethod()
         case .endClassDefinition:
             op = EndClassDefinition()
-        case .createArray:
-            op = CreateArray(numInitialValues: inouts.count - 1)
+        case .createArray(let p):
+            let elementGroupName = p.hasElementGroupName ? p.elementGroupName : nil
+            op = CreateArray(
+                numInitialValues: inouts.count - 1, elementGroupName: elementGroupName)
         case .createIntArray(let p):
             op = CreateIntArray(values: p.values)
         case .createFloatArray(let p):
@@ -2383,6 +2435,18 @@ extension Instruction: ProtobufConvertible {
             op = BeginBundleScript()
         case .endBundleScript:
             op = EndBundleScript()
+        case .beginBundleModule(let p):
+            op = BeginBundleModule(moduleName: p.moduleName)
+        case .endBundleModule(let p):
+            op = EndBundleModule(moduleName: p.moduleName)
+        case .beginBundleModuleEntryPoint:
+            op = BeginBundleModuleEntryPoint()
+        case .endBundleModuleEntryPoint:
+            op = EndBundleModuleEntryPoint()
+        case .exportVariables(let p):
+            op = ExportVariables(exportNames: p.exportNames)
+        case .importVariables(let p):
+            op = ImportVariables(importNames: p.importNames)
         case .loadNewTarget:
             op = LoadNewTarget()
         case .nop:
@@ -2793,6 +2857,21 @@ extension Instruction: ProtobufConvertible {
             op = WasmAnyConvertExtern()
         case .wasmExternConvertAny(_):
             op = WasmExternConvertAny()
+        case .rawWasmModule(let p):
+            let metadata = WasmModuleMetadata(
+                functions: p.metadata.functions.map { f in
+                    let params = f.signature.parameterTypes.map(JSTypeEnumToILType)
+                    let returns = JSTypeEnumToILType(f.signature.returnType)
+                    let parameterList = params.map { Parameter.plain($0) }
+                    return WasmModuleMetadata.FunctionExport(
+                        name: f.name, signature: Signature(expects: parameterList, returns: returns)
+                    )
+                },
+                globals: p.metadata.globals,
+                tables: p.metadata.tables,
+                tags: p.metadata.tags
+            )
+            op = RawWasmModule(bytes: [UInt8](p.bytes), metadata: metadata)
         }
 
         guard op.numInputs + op.numOutputs + op.numInnerOutputs == inouts.count else {
@@ -2807,5 +2886,34 @@ extension Instruction: ProtobufConvertible {
 
     init(from proto: ProtobufType) throws {
         try self.init(from: proto, with: nil)
+    }
+}
+
+private func ILTypeToJSTypeEnum(_ type: ILType) -> Fuzzilli_Protobuf_JSType {
+    if type.Is(.bigint) {
+        return .bigint
+    } else if type.Is(.number) {
+        return .number
+    } else if type.Is(.object()) {
+        return .object
+    } else if type.Is(.undefined) {
+        return .undefined
+    } else {
+        return .anything
+    }
+}
+
+private func JSTypeEnumToILType(_ type: Fuzzilli_Protobuf_JSType) -> ILType {
+    switch type {
+    case .number:
+        return .number
+    case .bigint:
+        return .bigint
+    case .object:
+        return .object()
+    case .undefined:
+        return .undefined
+    default:
+        return .jsAnything
     }
 }

@@ -751,6 +751,12 @@ public class OperationMutator: BaseInstructionMutator {
             .bindFunction(_),
             .beginBundleScript(_),
             .endBundleScript(_),
+            .beginBundleModule(_),
+            .endBundleModule(_),
+            .beginBundleModuleEntryPoint(_),
+            .endBundleModuleEntryPoint(_),
+            .exportVariables(_),
+            .importVariables(_),
             // Wasm instructions
             .beginWasmModule(_),
             .endWasmModule(_),
@@ -841,7 +847,8 @@ public class OperationMutator: BaseInstructionMutator {
             .wasmTableCopy(_),
             .wasmStructNew(_),
             .wasmRefEq(_),
-            .wasmRefCast(_):
+            .wasmRefCast(_),
+            .rawWasmModule(_):
             let mutability = instr.isOperationMutable ? "mutable" : "immutable"
             fatalError("Unexpected operation \(instr.op.opcode), marked as \(mutability)")
         }
@@ -935,6 +942,12 @@ public class OperationMutator: BaseInstructionMutator {
             // Typegroups are mutated by the CodeGenMutator by calling
             // `ProgramBuilder.buildIntoTypeGroup` which handles "exporting" of defined types via
             // the WasmEndTypeGroup instruction.
+            return instr
+        case .exportVariables(_):
+            // TODO(marja): Implement
+            return instr
+        case .importVariables(_):
+            // TODO(marja): Implement
             return instr
         default:
             fatalError("Unhandled Operation: \(type(of: instr.op))")

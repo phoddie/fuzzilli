@@ -227,6 +227,7 @@ public let codeGeneratorWeights = [
     "ApiFunctionCallGenerator":                 15,
     "VoidGenerator":                            1,
     "IteratorZipGenerator":                     1,
+    "IteratorZipKeyedGenerator":                1,
 
     // JS generators for wasm features (e.g. APIs on the WebAssembly global object).
     "WasmGlobalGenerator":                      4,
@@ -238,8 +239,11 @@ public let codeGeneratorWeights = [
     "WasmLegacyTryCatchComplexGenerator":       5,
 
     // For generating bundles
-    // TODO(marja): Add modules.
     "BundleScriptGenerator":                    1,
+    "BundleModuleGenerator":                    5,
+    "BundleModuleEntryPointGenerator":          5,
+    "ModuleImportGenerator":                    20,
+    "ModuleExportGenerator":                    20,
 
     //
     // Wasm generators

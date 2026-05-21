@@ -75,6 +75,9 @@ public class JavaScriptLifter: Lifter {
     }
     private var functionLiftingStack = Stack<FunctionLiftingState>()
 
+    // Mapping from the Variable which holds the module (output of EndBundleModule) to the module name.
+    private var moduleNames: [Variable: String] = [:]
+
     public init(
         prefix: String = "",
         suffix: String = "",
@@ -369,8 +372,18 @@ public class JavaScriptLifter: Lifter {
                     case .const:
                         w.emit("const \(op.variableName) = \(input(0));")
                     }
+                    w.declare(instr.output, as: op.variableName)
+                } else {
+                    // Emit an explicit declaration if we're going to use the variable in an export.
+                    // This avoids "export {SomeBuiltin as foo}" and forces "const v1 = SomeBuiltin; export {v1 as foo}".
+                    if analyzer.uses(of: instr.output).contains(where: { $0.op is ExportVariables })
+                    {
+                        let V = w.declare(instr.output)
+                        w.emit("const \(V) = \(op.variableName);")
+                    } else {
+                        w.declare(instr.output, as: op.variableName)
+                    }
                 }
-                w.declare(instr.output, as: op.variableName)
 
             case .createNamedDisposableVariable(let op):
                 w.emit("using \(op.variableName) = \(input(0));")
@@ -1578,6 +1591,39 @@ public class JavaScriptLifter: Lifter {
             case .endBundleScript:
                 break
 
+            case .beginBundleModule(let op):
+                w.emitRaw("// JS_BUNDLE_MODULE:\(op.moduleName)")
+
+            case .endBundleModule(let op):
+                moduleNames[instr.output] = op.moduleName
+                w.declare(instr.output)
+                break
+
+            case .beginBundleModuleEntryPoint:
+                w.emitRaw("// JS_BUNDLE_MODULE_ENTRYPOINT")
+
+            case .endBundleModuleEntryPoint:
+                break
+
+            case .exportVariables(let op):
+                assert(op.exportNames.count == instr.numInputs)
+                let exportSpecs = op.exportNames.enumerated().map { (i, name) in
+                    "\(inputAsIdentifier(i).text) as \(name)"
+                }
+                let specsStr = exportSpecs.joined(separator: ", ")
+                w.emit("export { \(specsStr) };")
+
+            case .importVariables(let op):
+                let outputs = w.declareAll(instr.outputs)
+                assert(op.importNames.count == outputs.count)
+                let importSpecs =
+                    zip(op.importNames, outputs).map { (exportName, outputName) in
+                        "\(exportName) as \(outputName)"
+                    }
+                let specsStr = importSpecs.joined(separator: ", ")
+                let moduleName = moduleNames[instr.input(0)]!
+                w.emit("import { \(specsStr) } from \"\(moduleName)\";")
+
             case .loadNewTarget:
                 w.assign(Identifier.new("new.target"), to: instr.output)
 
@@ -1666,15 +1712,7 @@ public class JavaScriptLifter: Lifter {
                         "\(LET) \(V) = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(["
                     )
                     w.enterNewBlock()
-                    let blockSize = 10
-                    for chunk in stride(from: 0, to: bytecode.count, by: blockSize).map({
-                        Array(bytecode[$0..<Swift.min($0 + blockSize, bytecode.count)])
-                    }) {
-                        let byteString =
-                            chunk.map({ String(format: "0x%02X", $0) }).joined(separator: ", ")
-                            + ","
-                        w.emit("\(byteString)")
-                    }
+                    liftByteArray([UInt8](bytecode), to: &w)
                     w.leaveCurrentBlock()
                     if importRefs.isEmpty {
                         w.emit("])));")
@@ -1716,6 +1754,17 @@ public class JavaScriptLifter: Lifter {
                     w.emit("throw \"Wasmlifting failed\";")
                 }
                 wasmInstructions.removeAll()
+
+            case .rawWasmModule(let op):
+                let LET = w.declarationKeyword(for: instr.output)
+                let V = w.declare(instr.output, as: "v\(instr.output.number)")
+                w.emit(
+                    "\(LET) \(V) = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(["
+                )
+                w.enterNewBlock()
+                liftByteArray(op.bytes, to: &w)
+                w.leaveCurrentBlock()
+                w.emit("])));")
 
             case .createWasmTable(let op):
                 let V = w.declare(instr.output)
@@ -2169,6 +2218,16 @@ public class JavaScriptLifter: Lifter {
             parts.append("set: \(values[second])")
         }
         return "{ \(parts.joined(separator: ", ")) }"
+    }
+
+    private func liftByteArray(_ bytes: [UInt8], to w: inout JavaScriptWriter, blockSize: Int = 10)
+    {
+        let byteStrings = bytes.map { String(format: "0x%02X", $0) }
+        for i in stride(from: 0, to: byteStrings.count, by: blockSize) {
+            let chunk = byteStrings[i..<Swift.min(i + blockSize, byteStrings.count)]
+            let line = chunk.joined(separator: ", ")
+            w.emit("\(line),")
+        }
     }
 
     private func liftArrayDestructPattern(indices: [Int64], outputs: [String], hasRestElement: Bool)
@@ -2681,6 +2740,11 @@ public class JavaScriptLifter: Lifter {
         private func shouldTryInlining(_ expression: Expression, producing v: Variable) -> Bool {
             if analyzer.numAssignments(of: v) > 1 {
                 // Can never inline an expression when the output variable is reassigned again later.
+                return false
+            }
+
+            // Do not inline if the variable is exported.
+            if analyzer.uses(of: v).contains(where: { $0.op is ExportVariables }) {
                 return false
             }
 

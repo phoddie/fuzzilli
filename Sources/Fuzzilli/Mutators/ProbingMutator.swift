@@ -51,6 +51,20 @@ public class ProbingMutator: RuntimeAssistedMutator {
         super.init("ProbingMutator", verbose: ProbingMutator.verbose)
     }
 
+    private func probeIfJsVariable(_ v: Variable, _ b: ProgramBuilder) -> Bool {
+        // We can only probe js "values", there are also other variables in the IL like labels that
+        // can not be inspected.
+        if b.type(of: v).Is(.jsAnything) {
+            assert(
+                b.context.contains(.javascript),
+                "Probing requires the js context, but got \(b.context)")
+            b.probe(v, id: v.identifier)
+            return true
+        } else {
+            return false
+        }
+    }
+
     override func instrument(_ program: Program, for fuzzer: Fuzzer) -> Program? {
         // Determine candidates for probing: every variable that is used at least once as an input is a candidate.
         var usedVariables = VariableSet()
@@ -75,6 +89,7 @@ public class ProbingMutator: RuntimeAssistedMutator {
         // the block that they are the output of is closed.
         var pendingProbesStack = Stack<Variable?>()
         let b = fuzzer.makeBuilder()
+        var instrumented = false
         b.adopting {
             for instr in program.code {
                 b.adopt(instr)
@@ -83,22 +98,23 @@ public class ProbingMutator: RuntimeAssistedMutator {
                     pendingProbesStack.push(nil)
                 } else if instr.isBlockGroupEnd {
                     if let v = pendingProbesStack.pop() {
-                        b.probe(v, id: v.identifier)
+                        if probeIfJsVariable(v, b) { instrumented = true }
                     }
                 }
 
                 for v in instr.innerOutputs where variablesToProbe.contains(v) {
-                    b.probe(v, id: v.identifier)
+                    if probeIfJsVariable(v, b) { instrumented = true }
                 }
                 for v in instr.outputs where variablesToProbe.contains(v) {
                     if instr.isBlockGroupStart {
                         pendingProbesStack.top = v
                     } else {
-                        b.probe(v, id: v.identifier)
+                        if probeIfJsVariable(v, b) { instrumented = true }
                     }
                 }
             }
         }
+        guard instrumented else { return nil }
 
         let instrumentedProgram = b.finalize()
         let numberOfInsertedProbes = instrumentedProgram.code.filter({ $0.op is Probe }).count

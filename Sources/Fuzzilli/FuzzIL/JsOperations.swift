@@ -1023,7 +1023,10 @@ final class CreateArray: JsOperation {
         return numInputs
     }
 
-    init(numInitialValues: Int) {
+    let elementGroupName: String?
+
+    init(numInitialValues: Int, elementGroupName: String? = nil) {
+        self.elementGroupName = elementGroupName
         super.init(
             numInputs: numInitialValues, numOutputs: 1, firstVariadicInput: 0,
             attributes: [.isVariadic])
@@ -2952,5 +2955,111 @@ final class Fixup: JsInternalOperation {
         self.action = action
         self.originalOperation = originalOperation
         super.init(numInputs: numArguments, numOutputs: hasOutput ? 1 : 0)
+    }
+}
+
+public struct WasmModuleMetadata: Hashable {
+    public struct FunctionExport: Hashable {
+        public let name: String
+        public let signature: Signature
+        public init(name: String, signature: Signature) {
+            self.name = name
+            self.signature = signature
+        }
+    }
+
+    public let functions: [FunctionExport]
+    public let globals: [String]
+    public let tables: [String]
+    public let tags: [String]
+
+    public init(
+        functions: [FunctionExport] = [], globals: [String] = [], tables: [String] = [],
+        tags: [String] = []
+    ) {
+        self.functions = functions
+        self.globals = globals
+        self.tables = tables
+        self.tags = tags
+    }
+}
+
+final class RawWasmModule: JsOperation {
+    override var opcode: Opcode { .rawWasmModule(self) }
+
+    let bytes: [UInt8]
+    let metadata: WasmModuleMetadata
+
+    init(bytes: [UInt8], metadata: WasmModuleMetadata = WasmModuleMetadata()) {
+        // TODO: Consider validating that bytes represent a valid Wasm module (starts with \0asm)
+        assert(!bytes.isEmpty, "Wasm module bytes should not be empty")
+        self.bytes = bytes
+        self.metadata = metadata
+        super.init(numOutputs: 1, requiredContext: [.javascript])
+    }
+}
+
+final class BeginBundleModule: JsOperation {
+    override var opcode: Opcode { .beginBundleModule(self) }
+    let moduleName: String
+
+    init(moduleName: String) {
+        self.moduleName = moduleName
+        super.init(
+            attributes: .isBlockStart, requiredContext: [.bundle],
+            contextOpened: [.moduleTopLevel, .javascript])
+    }
+}
+
+// The output will be the module.
+final class EndBundleModule: JsOperation {
+    override var opcode: Opcode { .endBundleModule(self) }
+    let moduleName: String
+
+    init(moduleName: String) {
+        self.moduleName = moduleName
+        super.init(numOutputs: 1, attributes: .isBlockEnd, requiredContext: .moduleTopLevel)
+    }
+}
+
+final class ExportVariables: JsOperation {
+    override var opcode: Opcode { .exportVariables(self) }
+    let exportNames: [String]
+
+    init(exportNames: [String]) {
+        self.exportNames = exportNames
+        super.init(
+            numInputs: exportNames.count, firstVariadicInput: 0, attributes: .isVariadic,
+            requiredContext: .moduleTopLevel)
+    }
+}
+
+final class ImportVariables: JsOperation {
+    override var opcode: Opcode { .importVariables(self) }
+    let importNames: [String]
+
+    init(importNames: [String]) {
+        self.importNames = importNames
+        super.init(
+            numInputs: 1, numOutputs: importNames.count, attributes: [.isNotInputMutable],
+            requiredContext: .moduleTopLevel)
+    }
+}
+
+final class BeginBundleModuleEntryPoint: JsOperation {
+    override var opcode: Opcode { .beginBundleModuleEntryPoint(self) }
+
+    init() {
+        super.init(
+            attributes: .isBlockStart, requiredContext: [.bundle],
+            contextOpened: [.moduleTopLevel, .javascript])
+    }
+}
+
+final class EndBundleModuleEntryPoint: JsOperation {
+    override var opcode: Opcode { .endBundleModuleEntryPoint(self) }
+
+    init() {
+        super.init(attributes: .isBlockEnd, requiredContext: .moduleTopLevel)
     }
 }

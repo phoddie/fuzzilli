@@ -47,6 +47,8 @@ public struct JSTyper: Analyzer {
     /// This tracks program local object groups (WasmModules, JS Classes and Object literals).
     private var dynamicObjectGroupManager = ObjectGroupManager()
 
+    private var seenExports: [(String, Variable)] = []
+
     public class ObjectGroupManager {
         /// The finalized object groups that we can query through the Typer.
         var finalizedObjectGroups = [ObjectGroup]()
@@ -447,6 +449,7 @@ public struct JSTyper: Analyzer {
         dynamicObjectGroupManager = ObjectGroupManager()
         assert(activeFunctionDefinitions.isEmpty)
         assert(dynamicObjectGroupManager.isEmpty)
+        seenExports = []
     }
 
     private mutating func registerWasmMemoryUse(for memory: Variable) {
@@ -685,6 +688,17 @@ public struct JSTyper: Analyzer {
         }
         selfReferences.removeAll()
         isWithinTypeGroup = false
+    }
+
+    public mutating func finalizeJsModule() -> ILType {
+        let exportsMap = Dictionary(
+            uniqueKeysWithValues: seenExports.map {
+                ($0, state.type(of: $1))
+            })
+        let moduleType = ILType.jsModule(exports: exportsMap)
+
+        seenExports = []
+        return moduleType
     }
 
     mutating func setReferenceType(of: Variable, typeDef: Variable, nullability: Bool) {
@@ -1136,6 +1150,14 @@ public struct JSTyper: Analyzer {
         case .endWasmModule(_):
             let instanceType = dynamicObjectGroupManager.finalizeWasmModule()
             setType(of: instr.output, to: instanceType)
+        case .endBundleModule(_):
+            let instanceType = finalizeJsModule()
+            setType(of: instr.output, to: instanceType)
+        case .endBundleModuleEntryPoint(_):
+            seenExports = []
+        case .exportVariables(let op):
+            seenExports += zip(op.exportNames, instr.inputs)
+
         default:
             break
         }
@@ -1306,6 +1328,14 @@ public struct JSTyper: Analyzer {
             break
         case .endWasmModule(_):
             break
+        case .beginBundleModule(_):
+            break
+        case .endBundleModule(_):
+            break
+        case .beginBundleModuleEntryPoint(_):
+            break
+        case .endBundleModuleEntryPoint(_):
+            break
         case .beginPlainFunction(let op):
             // Plain functions can also be used as constructors.
             // The return value type will only be known after fully processing the function definitions.
@@ -1388,7 +1418,11 @@ public struct JSTyper: Analyzer {
             .beginWasmModule,
             .endWasmModule,
             .beginBundleScript,
-            .endBundleScript:
+            .endBundleScript,
+            .beginBundleModule,
+            .endBundleModule,
+            .beginBundleModuleEntryPoint,
+            .endBundleModuleEntryPoint:
             // Object literals and class definitions don't create any conditional branches, only methods and accessors inside of them. These are handled further below.
             break
         case .beginIf:
@@ -1927,14 +1961,57 @@ public struct JSTyper: Analyzer {
                 instr.innerOutputs(1...),
                 parameters: inferSubroutineParameterList(of: op, at: instr.index))
 
-        case .createArray,
-            .createIntArray,
+        case .createArray(let op):
+            if let elementGroupName = op.elementGroupName {
+                let elementType = self.environment.type(ofGroup: elementGroupName)
+                set(instr.output, .createJsArrayType(ofElementType: elementType))
+            } else {
+                set(instr.output, .jsArray)
+            }
+
+        case .createIntArray,
             .createFloatArray,
             .createArrayWithSpread:
             set(instr.output, .jsArray)
 
         case .createTemplateString:
             set(instr.output, .jsString)
+
+        case .rawWasmModule(let op):
+            let groupName = "_fuzz_RawWasmExports_\(instr.index)"
+
+            var properties = [String: ILType]()
+            var methods = [String: [Signature]]()
+
+            for f in op.metadata.functions {
+                methods[f.name] = [f.signature]
+            }
+            for g in op.metadata.globals {
+                properties[g] = .object(withProperties: ["value"], withMethods: ["valueOf"])
+            }
+            for t in op.metadata.tables {
+                properties[t] = .object(
+                    withProperties: ["length"], withMethods: ["get", "grow", "set"])
+            }
+            for t in op.metadata.tags {
+                properties[t] = .object()
+            }
+
+            let exportsGroup = ObjectGroup(
+                name: groupName, instanceType: nil, properties: properties, overloads: methods)
+            dynamicObjectGroupManager.finalizedObjectGroups.append(exportsGroup)
+
+            let exportsType = exportsGroup.instanceType
+
+            let moduleGroupName = "_fuzz_RawWasmModule_\(instr.index)"
+            let moduleGroup = ObjectGroup(
+                name: moduleGroupName, instanceType: nil, properties: ["exports": exportsType],
+                overloads: [:])
+            dynamicObjectGroupManager.finalizedObjectGroups.append(moduleGroup)
+
+            // The instanceType is not nil here; it is automatically computed by the
+            // ObjectGroup constructor when passed as nil above.
+            set(instr.output, moduleGroup.instanceType)
 
         case .getProperty(let op):
             set(instr.output, inferPropertyType(of: op.propertyName, on: instr.input(0)))
@@ -1965,6 +2042,16 @@ public struct JSTyper: Analyzer {
             .callComputedMethod,
             .callComputedMethodWithSpread:
             set(instr.output, .jsAnything)
+
+        case .importVariables(let op):
+            let moduleType = type(ofInput: 0)
+            let exports = moduleType.exports
+            assert(instr.outputs.count == op.importNames.count)
+            for (idx, output) in instr.outputs.enumerated() {
+                let exportedName = op.importNames[idx]
+                let exportedType = exports[exportedName] ?? .jsAnything
+                set(output, exportedType)
+            }
 
         case .ternaryOperation:
             let outputType = type(ofInput: 1) | type(ofInput: 2)

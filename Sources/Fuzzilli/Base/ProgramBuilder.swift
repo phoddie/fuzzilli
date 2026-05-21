@@ -131,6 +131,8 @@ public class ProgramBuilder {
         return activeWasmModule!.functions.last!
     }
 
+    private var activeJsModuleName: String? = nil
+
     /// Stack of active class definitions.
     ///
     /// Similar to object literals, class definitions can be nested so this needs to be a stack.
@@ -813,7 +815,14 @@ public class ProgramBuilder {
                     }
 
                     let element = self.generateTypeInternal(iterableElementType)
-                    return self.createArray(with: [element])
+                    guard let elementGroupName = iterableElementType.group else {
+                        self.logger.warning(
+                            "Type argument \(iterableElementType) does not have a group. Creating non-parameterized array."
+                        )
+                        return self.createArray(with: [element])
+                    }
+
+                    return self.createArray(with: [element], elementGroupName: elementGroupName)
                 },
             .function():
                 {
@@ -852,6 +861,13 @@ public class ProgramBuilder {
                     return self.randomVariable(ofType: .wasmTypeDef())!
                 },
             .object():
+                // There may potentially be multiple valid sources whence .object types can be
+                // generated. The prioritization order for these sources is:
+                // 1. Registered producing generators for the type (selected according to their probability)
+                // 2. Custom CodeGenerators that are declared to produce this type (selected with high probability)
+                // 3. Global properties (selected with high probability)
+                // 4. Any other methods or properties that return this type
+                // 5. Fallback: creating an object and adding properties directly
                 {
                     func useMethodToProduce(_ method: (group: String, method: String)) -> Variable {
                         let group = self.fuzzer.environment.type(ofGroup: method.group)
@@ -914,6 +930,31 @@ public class ProgramBuilder {
                         }
                     }
 
+                    let generators = self.fuzzer.codeGenerators.filter({
+                        // Right now only use generators that require a single context.
+                        $0.parts.last!.requiredContext.isSingle
+                            && $0.parts.last!.requiredContext.satisfied(by: self.context)
+                            && $0.parts.last!.produces.contains(where: { produces in
+                                produces.type.Is(type)
+                            })
+                    })
+
+                    func useGenerator() -> Variable {
+                        let generator = generators.randomElement()
+                        let _ = self.complete(generator: generator, withBudget: 10)
+                        guard let variable = self.randomVariable(ofTypeOrSubtype: type) else {
+                            fatalError(
+                                "The generator \(generator.name) is supposed to generate type "
+                                    + "\(type). Either the generator or its annotation is wrong.")
+                        }
+                        return variable
+                    }
+
+                    // If there is a CodeGenerator marked as producing this type, use it with high probability.
+                    if generators.count > 0 && probability(0.75) {
+                        return useGenerator()
+                    }
+
                     let producingMethods = self.fuzzer.environment.getProducingMethods(ofType: type)
                     let producingProperties = self.fuzzer.environment.getProducingProperties(
                         ofType: type)
@@ -942,24 +983,12 @@ public class ProgramBuilder {
                     } else if let property = maybeProperty {
                         return usePropertyToProduce(property)
                     }
-                    let generators = self.fuzzer.codeGenerators.filter({
-                        // Right now only use generators that require a single context.
-                        $0.parts.last!.requiredContext.isSingle
-                            && $0.parts.last!.requiredContext.satisfied(by: self.context)
-                            && $0.parts.last!.produces.contains(where: { produces in
-                                produces.type.Is(type)
-                            })
-                    })
+
+                    // We might have skipped generators before; try them again before returning a less relevant object.
                     if generators.count > 0 {
-                        let generator = generators.randomElement()
-                        let _ = self.complete(generator: generator, withBudget: 10)
-                        guard let variable = self.randomVariable(ofTypeOrSubtype: type) else {
-                            fatalError(
-                                "The generator \(generator.name) is supposed to generate type "
-                                    + "\(type). Either the generator or its annotation is wrong.")
-                        }
-                        return variable
+                        return useGenerator()
                     }
+
                     // Otherwise this is one of the following:
                     // 1. an object with more type information, i.e. it has a group, but no associated builtin, e.g. we cannot construct it with new.
                     // 2. an object without a group, but it has some required fields.
@@ -3133,9 +3162,14 @@ public class ProgramBuilder {
     }
 
     @discardableResult
-    public func createArray(with initialValues: [Variable]) -> Variable {
-        return emit(CreateArray(numInitialValues: initialValues.count), withInputs: initialValues)
-            .output
+    public func createArray(with initialValues: [Variable], elementGroupName: String? = nil)
+        -> Variable
+    {
+        return emit(
+            CreateArray(numInitialValues: initialValues.count, elementGroupName: elementGroupName),
+            withInputs: initialValues
+        )
+        .output
     }
 
     @discardableResult
@@ -4145,6 +4179,63 @@ public class ProgramBuilder {
 
     public func buildBlockStatement(_ body: () -> Void) {
         buildBlockStatement { _ in body() }
+    }
+
+    public func beginBundleModule(name: String) {
+        activeJsModuleName = name
+        emit(BeginBundleModule(moduleName: name))
+    }
+
+    public func endBundleModule() -> Variable {
+        let endModuleInstruction = emit(EndBundleModule(moduleName: activeJsModuleName!))
+        activeJsModuleName = nil
+        return endModuleInstruction.output
+    }
+
+    public func beginBundleModuleEntryPoint() {
+        emit(BeginBundleModuleEntryPoint())
+    }
+
+    public func endBundleModuleEntryPoint() {
+        emit(EndBundleModuleEntryPoint())
+    }
+
+    public func generateExport() {
+        guard hasVisibleJsVariables else { return }
+
+        let numExports = Int.random(in: 1...5)
+        var varsToExport: [Variable] = []
+        var exportNames: [String] = []
+        for i in 0..<numExports {
+            varsToExport.append(randomJsVariable())
+            // TODO(marja): These names are not guaranteed to be unique. Figure out
+            // a better naming solution.
+            exportNames.append("export\(indexOfNextInstruction())_\(i)")
+        }
+        exportVariables(variables: varsToExport, exportNames: exportNames)
+    }
+
+    public func generateImport() {
+        // TODO(marja): Reassigning to imported variables is not allowed in JavaScript -> make Fuzzilli not reassign.
+        if let module = findVariable(satisfying: {
+            type(of: $0).Is(.jsModule()) && !type(of: $0).exports.isEmpty
+        }) {
+            let exports = type(of: module).exports
+            let numImports = Int.random(in: 1...exports.count)
+            let variableNames = (0..<numImports).map { _ in
+                exports.randomElement()!.key
+            }
+            _ = importVariables(module: module, importNames: variableNames)
+        }
+    }
+
+    public func exportVariables(variables: [Variable], exportNames: [String]) {
+        assert(variables.count == exportNames.count)
+        emit(ExportVariables(exportNames: exportNames), withInputs: variables)
+    }
+
+    public func importVariables(module: Variable, importNames: [String]) -> Instruction {
+        return emit(ImportVariables(importNames: importNames), withInputs: [module])
     }
 
     public func blockBreak(_ label: Variable) {
@@ -5961,6 +6052,13 @@ public class ProgramBuilder {
                 return .iKind(value: chooseUniform(from: WasmIntegerCompareOpKind.allCases))
             }
         }
+    }
+
+    @discardableResult
+    public func rawWasmModule(bytes: [UInt8], metadata: WasmModuleMetadata = WasmModuleMetadata())
+        -> Variable
+    {
+        return emit(RawWasmModule(bytes: bytes, metadata: metadata)).output
     }
 
     @discardableResult

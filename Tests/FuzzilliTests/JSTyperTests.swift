@@ -1064,6 +1064,36 @@ class JSTyperTests: XCTestCase {
         XCTAssertEqual(b.type(of: a), ILType.jsArray)
     }
 
+    func testParameterizedArrayCreation() {
+        let propFooType = ILType.float
+        let fooElement = ILType.object(ofGroup: "FooElement", withProperties: ["foo"])
+        let additionalObjectGroups: [ObjectGroup] = [
+            ObjectGroup(
+                name: "FooElement",
+                instanceType: fooElement,
+                properties: [
+                    "foo": propFooType
+                ],
+                methods: [:])
+        ]
+
+        let env = JavaScriptEnvironment(additionalObjectGroups: additionalObjectGroups)
+        let fuzzer = makeMockFuzzer(environment: env)
+        let b = fuzzer.makeBuilder()
+
+        let a1 = b.createArray(with: [], elementGroupName: "FooElement")
+        XCTAssertEqual(
+            b.type(of: a1),
+            ILType.createJsArrayType(ofElementType: fooElement))
+
+        // For an unregistered group, resulting `jsArray` will have element type `.jsAnything`
+        let a2 = b.createArray(with: [], elementGroupName: "UnknownGroup")
+        XCTAssertEqual(b.type(of: a2), ILType.createJsArrayType(ofElementType: .jsAnything))
+
+        let a3 = b.createArray(with: [])
+        XCTAssertEqual(b.type(of: a3), ILType.jsArray)
+    }
+
     func testSuperBinding() {
         let fuzzer = makeMockFuzzer()
         let b = fuzzer.makeBuilder()
@@ -2283,5 +2313,48 @@ class JSTyperTests: XCTestCase {
         XCTAssertNil(b.type(of: v2).group)
         XCTAssertFalse(b.type(of: v2).isEnumeration)
         XCTAssert(b.type(of: v2).Is(.integer))
+    }
+
+    func testRawWasmModuleTyping() {
+        let fuzzer = makeMockFuzzer()
+        let b = fuzzer.makeBuilder()
+
+        let bytes: [UInt8] = [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00]
+        let metadata = WasmModuleMetadata(
+            functions: [
+                WasmModuleMetadata.FunctionExport(
+                    name: "foo", signature: Signature(expects: [.plain(.integer)], returns: .float)),
+                WasmModuleMetadata.FunctionExport(
+                    name: "bar", signature: Signature(expects: [], returns: .undefined)),
+            ],
+            globals: ["g1"],
+            tables: ["t1"],
+            tags: ["tag1"]
+        )
+
+        let module = b.rawWasmModule(bytes: bytes, metadata: metadata)
+        let exports = b.getProperty("exports", of: module)
+        let exportsType = b.type(of: exports)
+
+        XCTAssertTrue(exportsType.methods.contains("foo"))
+        XCTAssertTrue(exportsType.methods.contains("bar"))
+        XCTAssertTrue(exportsType.properties.contains("g1"))
+        XCTAssertTrue(exportsType.properties.contains("t1"))
+        XCTAssertTrue(exportsType.properties.contains("tag1"))
+
+        let foo = b.getProperty("foo", of: exports)
+        XCTAssertTrue(
+            b.type(of: foo).Is(.function(Signature(expects: [.plain(.integer)], returns: .float))))
+
+        let g1 = b.getProperty("g1", of: exports)
+        let g1Type = b.type(of: g1)
+        XCTAssertTrue(g1Type.properties.contains("value"))
+        XCTAssertTrue(g1Type.methods.contains("valueOf"))
+
+        let t1 = b.getProperty("t1", of: exports)
+        let t1Type = b.type(of: t1)
+        XCTAssertTrue(t1Type.methods.contains("grow"))
+        XCTAssertTrue(t1Type.methods.contains("get"))
+        XCTAssertTrue(t1Type.methods.contains("set"))
     }
 }
