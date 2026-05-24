@@ -1535,6 +1535,12 @@ message WasmRefCast {
     WasmILType type = 1;
 }
 
+message WasmBranchOnNull {
+}
+
+message WasmBranchOnNonNull {
+}
+
 message WasmRefI31 {
     bool isShared = 1;
 }
@@ -1563,14 +1569,21 @@ enum WasmAtomicStoreType {
   I64_STORE_32 = 6;
 }
 
+enum WasmMemoryOrdering {
+  SEQUENTIALLY_CONSISTENT = 0;
+  ACQUIRE_RELEASE = 1;
+}
+
 message WasmAtomicLoad {
   WasmAtomicLoadType loadType = 1;
   int64 offset = 2;
+  WasmMemoryOrdering ordering = 3;
 }
 
 message WasmAtomicStore {
   WasmAtomicStoreType storeType = 1;
   int64 offset = 2;
+  WasmMemoryOrdering ordering = 3;
 }
 
 enum WasmAtomicRMWType {
@@ -1621,6 +1634,7 @@ enum WasmAtomicRMWType {
 message WasmAtomicRMW {
     WasmAtomicRMWType op = 1;
     int64 offset = 2;
+    WasmMemoryOrdering ordering = 3;
 }
 
 enum WasmAtomicCmpxchgType {
@@ -1636,6 +1650,7 @@ enum WasmAtomicCmpxchgType {
 message WasmAtomicCmpxchg {
     WasmAtomicCmpxchgType op = 1;
     int64 offset = 2;
+    WasmMemoryOrdering ordering = 3;
 }
 
 message WasmAnyConvertExtern {
@@ -1726,4 +1741,12 @@ message BeginBundleModuleEntryPoint {
 }
 
 message EndBundleModuleEntryPoint {
+}
+
+message CreateMap {
+    optional string keyGroupName = 1;
+    optional string valueGroupName = 2;
+}
+
+message BeginForAwaitOfLoop {
 }

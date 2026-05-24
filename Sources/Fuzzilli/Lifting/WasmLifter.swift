@@ -1701,21 +1701,40 @@ public class WasmLifter {
     // and the memory index is also encoded.
     // Memory zero: `[align]`.
     // Multi-memory: `[align | 0x40] + [mem_idx]`.
-    private func alignmentAndMemoryBytes(_ memory: Variable, alignment: Int64 = 1) throws -> Data {
+    private func alignmentAndMemoryBytes(
+        _ memory: Variable, alignment: Int64 = 1,
+        ordering: WasmMemoryOrdering = .sequentiallyConsistent, isRMW: Bool = false
+    ) throws -> Data {
         assert(
             alignment > 0 && (alignment & (alignment - 1)) == 0, "Alignment must be a power of two")
         let memoryIdx = try resolveIdx(ofType: .memory, for: memory)
 
         let alignmentLog2 = alignment.trailingZeroBitCount
         assert(
-            alignmentLog2 < 0x40, "Alignment \(alignment) is too large for multi-memory encoding")
+            alignmentLog2 < 0x20, "Alignment \(alignment) is too large")
 
-        if memoryIdx == 0 {
-            return Leb128.unsignedEncode(alignmentLog2)
-        } else {
-            let flags = UInt8(alignmentLog2) | 0x40
-            return Data([flags]) + Leb128.unsignedEncode(memoryIdx)
+        var flags = UInt8(alignmentLog2)
+        if memoryIdx != 0 {
+            flags |= 0x40
         }
+        if ordering != .sequentiallyConsistent {
+            flags |= 0x20
+        }
+
+        var result = Data([flags])
+        if memoryIdx != 0 {
+            result.append(contentsOf: Leb128.unsignedEncode(memoryIdx))
+        }
+        if ordering != .sequentiallyConsistent {
+            var orderingByte = ordering.rawValue
+            if isRMW {
+                // For RMWs, the low four bits encode the read ordering and the high four bits
+                // encode the write ordering.
+                orderingByte |= (orderingByte << 4)
+            }
+            result.append(orderingByte)
+        }
+        return result
     }
 
     private func branchDepthFor(label: Variable) throws -> Int {
@@ -1950,23 +1969,27 @@ public class WasmLifter {
         case .wasmAtomicLoad(let op):
             let opcode = [Prefix.Atomic.rawValue, op.loadType.rawValue]
             let alignAndMemory = try alignmentAndMemoryBytes(
-                wasmInstruction.input(0), alignment: op.loadType.naturalAlignment())
+                wasmInstruction.input(0), alignment: op.loadType.naturalAlignment(),
+                ordering: op.ordering)
             return Data(opcode) + alignAndMemory + Leb128.signedEncode(Int(op.offset))
 
         case .wasmAtomicStore(let op):
             let opcode = [Prefix.Atomic.rawValue, op.storeType.rawValue]
             let alignAndMemory = try alignmentAndMemoryBytes(
-                wasmInstruction.input(0), alignment: op.storeType.naturalAlignment())
+                wasmInstruction.input(0), alignment: op.storeType.naturalAlignment(),
+                ordering: op.ordering)
             return Data(opcode) + alignAndMemory + Leb128.signedEncode(Int(op.offset))
         case .wasmAtomicRMW(let op):
             let opcode = [Prefix.Atomic.rawValue, op.op.rawValue]
             let alignAndMemory = try alignmentAndMemoryBytes(
-                wasmInstruction.input(0), alignment: op.op.naturalAlignment())
+                wasmInstruction.input(0), alignment: op.op.naturalAlignment(),
+                ordering: op.ordering, isRMW: true)
             return Data(opcode) + alignAndMemory + Leb128.signedEncode(Int(op.offset))
         case .wasmAtomicCmpxchg(let op):
             let opcode = [Prefix.Atomic.rawValue, op.op.rawValue]
             let alignAndMemory = try alignmentAndMemoryBytes(
-                wasmInstruction.input(0), alignment: op.op.naturalAlignment())
+                wasmInstruction.input(0), alignment: op.op.naturalAlignment(),
+                ordering: op.ordering, isRMW: true)
             return Data(opcode) + alignAndMemory + Leb128.signedEncode(Int(op.offset))
         case .wasmMemorySize(_):
             let memoryIdx = try resolveIdx(ofType: .memory, for: wasmInstruction.input(0))
@@ -2092,15 +2115,19 @@ public class WasmLifter {
         case .wasmRethrow(_):
             let blockDepth = try branchDepthFor(label: wasmInstruction.input(0))
             return Data([0x09] + Leb128.unsignedEncode(blockDepth))
-        case .wasmBranch(let op):
+        case .wasmBranch(_):
             let branchDepth = try branchDepthFor(label: wasmInstruction.input(0))
             return Data([0x0C]) + Leb128.unsignedEncode(branchDepth)
-                + Array(repeating: 0x1a, count: op.parameterCount)
         case .wasmBranchIf(let op):
             currentFunction!.addBranchHint(op.hint)
             let branchDepth = try branchDepthFor(label: wasmInstruction.input(0))
             return Data([0x0D]) + Leb128.unsignedEncode(branchDepth)
-                + Array(repeating: 0x1a, count: op.parameterCount)
+        case .wasmBranchOnNull(_):
+            let branchDepth = try branchDepthFor(label: wasmInstruction.input(0))
+            return Data([0xD5]) + Leb128.unsignedEncode(branchDepth)
+        case .wasmBranchOnNonNull(_):
+            let branchDepth = try branchDepthFor(label: wasmInstruction.input(0))
+            return Data([0xD6]) + Leb128.unsignedEncode(branchDepth)
         case .wasmBranchTable(let op):
             let depths = try (0...op.valueCount).map {
                 try branchDepthFor(label: wasmInstruction.input($0))

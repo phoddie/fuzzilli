@@ -159,6 +159,7 @@ public let codeGeneratorWeights = [
     "UnboundFunctionApplyGenerator":            10,
     "UnboundFunctionBindGenerator":             10,
     "FunctionBindGenerator":                    10,
+    "HomomorphicObjectsGenerator":              5,
 
     // These will only be used inside class methods, and only if private properties were previously declared in that class.
     "PrivatePropertyRetrievalGenerator":        30,
@@ -184,6 +185,7 @@ public let codeGeneratorWeights = [
     "ComplexForLoopGenerator":                  10,
     "ForInLoopGenerator":                       10,
     "ForOfLoopGenerator":                       10,
+    "ForAwaitOfLoopGenerator":                  10,
     "ForOfWithDestructLoopGenerator":           3,
     "RepeatLoopGenerator":                      10,
     "SwitchCaseBreakGenerator":                 5,
@@ -345,6 +347,8 @@ public let codeGeneratorWeights = [
     "WasmThrowRefGenerator":                    6,
     "WasmBranchGenerator":                      6,
     "WasmBranchIfGenerator":                    6,
+    "WasmBranchOnNullGenerator":                6,
+    "WasmBranchOnNonNullGenerator":             6,
     "WasmBranchTableGenerator":                 6,
     "WasmTryTableGenerator":                    6,
     "WasmJsCallGenerator":                      30,

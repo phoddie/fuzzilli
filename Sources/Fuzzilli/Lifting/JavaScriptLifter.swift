@@ -1478,6 +1478,17 @@ public class JavaScriptLifter: Lifter {
                 w.emit("\(prefix)for (\(LET) \(V) of \(OBJ)) {")
                 w.enterNewBlock()
 
+            case .beginForAwaitOfLoop:
+                let V = w.declare(instr.innerOutput(0))
+                let LET = w.declarationKeyword(for: instr.innerOutput(0))
+                let OBJ = input(0)
+
+                let labelVar = instr.innerOutputs.last!
+                let prefix = w.labelPrefix(for: labelVar)
+
+                w.emit("\(prefix)for await (\(LET) \(V) of \(OBJ)) {")
+                w.enterNewBlock()
+
             case .beginForOfLoopWithDestruct(let op):
                 let outputs = w.declareAll(instr.innerOutputs.dropLast())
                 let PATTERN = liftArrayDestructPattern(
@@ -1630,6 +1641,10 @@ public class JavaScriptLifter: Lifter {
             case .print:
                 let VALUE = input(0)
                 w.emit("fuzzilli('FUZZILLI_PRINT', \(VALUE));")
+
+            case .createMap:
+                let elems = inputs.map({ $0.text }).joined(separator: ",")
+                w.assign(NewExpression.new("new Map([\(elems)])"), to: instr.output)
 
             case .createWasmGlobal(let op):
                 let V = w.declare(instr.output)
@@ -1932,6 +1947,8 @@ public class JavaScriptLifter: Lifter {
                 .wasmDefineTag(_),
                 .wasmBranch(_),
                 .wasmBranchIf(_),
+                .wasmBranchOnNull(_),
+                .wasmBranchOnNonNull(_),
                 .wasmBranchTable(_),
                 .wasmBeginIf(_),
                 .wasmBeginElse(_),

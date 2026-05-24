@@ -1273,6 +1273,33 @@ class LifterTests: XCTestCase {
         XCTAssertEqual(actual, expected)
     }
 
+    func testMapLifting() {
+        let fuzzer = makeMockFuzzer()
+        let b = fuzzer.makeBuilder()
+
+        b.createMap(withKeys: [], withValues: [])
+
+        let key1 = b.loadString("key1")
+        let val1 = b.loadInt(42)
+        let key2 = b.loadString("key2")
+        let val2 = b.loadInt(43)
+        b.createMap(withKeys: [key1, key2], withValues: [val1, val2])
+        let undef = b.loadUndefined()
+        b.emit(CreateMap(numInitialValues: 1), withInputs: [undef])
+
+        let program = b.finalize()
+        let actual = fuzzer.lifter.lift(program)
+
+        let expected = """
+            new Map([]);
+            new Map([["key1",42],["key2",43]]);
+            new Map([undefined]);
+
+            """
+
+        XCTAssertEqual(actual, expected)
+    }
+
     func testBinaryOperationLifting() {
         let fuzzer = makeMockFuzzer()
         let b = fuzzer.makeBuilder()
@@ -4690,6 +4717,51 @@ class LifterTests: XCTestCase {
 
             """
 
+        XCTAssertEqual(actual, expected)
+    }
+
+    func testForAwaitOfLoopLifting() {
+        let fuzzer = makeMockFuzzer(
+            config: Configuration(logLevel: .error),
+            environment: JavaScriptEnvironment()
+        )
+        let b = fuzzer.makeBuilder()
+
+        b.buildAsyncFunction(with: .parameters(n: 1)) { args in
+            let asyncIterable = args[0]
+
+            b.buildForAwaitOfLoop(asyncIterable) { loopVar, label in
+                // Inside loop body: call 'print(loopVar)'
+                let printFunc = b.createNamedVariable(forBuiltin: "print")
+                b.callFunction(printFunc, withArgs: [loopVar])
+            }
+        }
+
+        let program = b.finalize()
+
+        let fuzzILLifter = FuzzILLifter()
+        let fuzzILOutput = fuzzILLifter.lift(program)
+
+        // Assert FuzzIL contains our new instructions
+        XCTAssertTrue(fuzzILOutput.contains("BeginForAwaitOfLoop"))
+        XCTAssertTrue(fuzzILOutput.contains("EndForOfLoop"))
+
+        let jsLifter = JavaScriptLifter(
+            prefix: "",
+            suffix: "",
+            ecmaVersion: .es6,
+            environment: fuzzer.environment
+        )
+        let actual = jsLifter.lift(program)
+
+        let expected = """
+            async function f0(a1) {
+                for await (const v2 of a1) {
+                    print(v2);
+                }
+            }
+
+            """
         XCTAssertEqual(actual, expected)
     }
 }

@@ -2370,6 +2370,20 @@ final class BeginForOfLoop: JsOperation {
     }
 }
 
+final class BeginForAwaitOfLoop: JsOperation {
+    override var opcode: Opcode { .beginForAwaitOfLoop(self) }
+
+    init() {
+        super.init(
+            numInputs: 1,
+            numInnerOutputs: 2,
+            attributes: [.isBlockStart, .propagatesSurroundingContext],
+            requiredContext: [.javascript, .asyncFunction],
+            contextOpened: [.javascript, .loop]
+        )
+    }
+}
+
 // Note: The last innerOutput is the label of the loop.
 final class BeginForOfLoopWithDestruct: JsOperation {
     override var opcode: Opcode { .beginForOfLoopWithDestruct(self) }
@@ -3061,5 +3075,30 @@ final class EndBundleModuleEntryPoint: JsOperation {
 
     init() {
         super.init(attributes: .isBlockEnd, requiredContext: .moduleTopLevel)
+    }
+}
+
+/// Creates a new JavaScript Map object.
+///
+/// While creating a Map is already possible in FuzzIL by calling the `Map`
+/// constructor this dedicated operation allows for parameterizing the types of
+/// the keys and values (via group names), providing more precise type
+/// information to the fuzzer for fuzzing programs with strict type requirements.
+final class CreateMap: JsOperation {
+    override var opcode: Opcode { .createMap(self) }
+
+    var numInitialValues: Int {
+        return numInputs
+    }
+
+    let keyGroupName: String?
+    let valueGroupName: String?
+
+    init(numInitialValues: Int, keyGroupName: String? = nil, valueGroupName: String? = nil) {
+        self.keyGroupName = keyGroupName
+        self.valueGroupName = valueGroupName
+        super.init(
+            numInputs: numInitialValues, numOutputs: 1, firstVariadicInput: 0,
+            attributes: [.isVariadic])
     }
 }

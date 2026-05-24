@@ -408,4 +408,117 @@ class WasmAtomicsTests: XCTestCase {
 
         testForOutput(program: js, runner: runner, outputString: expectedOutput)
     }
+
+    /// Test case for the new AcquireRelease memory ordering.
+    func testMemoryOrdering() throws {
+        let runner = try GetJavaScriptExecutorOrSkipTest(
+            type: .any,
+            withArguments: ["--experimental-wasm-acquire-release"])
+        let js = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                let memory0 = wasmModule.addMemory(minPages: 1, maxPages: 4, isShared: true)
+                let memory1 = wasmModule.addMemory(minPages: 1, maxPages: 4, isShared: true)
+                wasmModule.addWasmFunction(with: [] => [.wasmi32, .wasmi32]) { f, _, _ in
+                    let valueToStore = f.consti32(42)
+                    let address = f.consti32(0)
+                    f.wasmAtomicStore(
+                        memory: memory0, address: address, value: valueToStore,
+                        storeType: .i32Store, offset: 0, ordering: .acquireRelease)
+                    let loadedValue0 = f.wasmAtomicLoad(
+                        memory: memory0, address: address, loadType: .i32Load, offset: 0,
+                        ordering: .acquireRelease)
+
+                    let valueToStore1 = f.consti32(1337)
+                    let address1 = f.consti32(8)
+                    f.wasmAtomicStore(
+                        memory: memory1, address: address1, value: valueToStore1,
+                        storeType: .i32Store, offset: 0, ordering: .acquireRelease)
+                    let loadedValue1 = f.wasmAtomicLoad(
+                        memory: memory1, address: address1, loadType: .i32Load, offset: 0,
+                        ordering: .acquireRelease)
+
+                    return [loadedValue0, loadedValue1]
+                }
+            }
+            let exports = module.loadExports()
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            let w0 = b.getProperty("w0", of: exports)
+            let r = b.callFunction(w0)
+            b.callFunction(outputFunc, withArgs: [b.arrayToStringForTesting(r)])
+        }
+        testForOutput(program: js, runner: runner, outputString: "42,1337\n")
+    }
+
+    /// Test case for the new AcquireRelease memory ordering on RMW operations.
+    func testRMWOrdering() throws {
+        let runner = try GetJavaScriptExecutorOrSkipTest(
+            type: .any,
+            withArguments: ["--experimental-wasm-acquire-release"])
+        let js = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                let memory = wasmModule.addMemory(minPages: 1, maxPages: 4, isShared: true)
+                wasmModule.addWasmFunction(with: [] => [.wasmi32, .wasmi32]) { f, _, _ in
+                    let valueToStore = f.consti32(42)
+                    let address = f.consti32(0)
+                    f.wasmAtomicStore(
+                        memory: memory, address: address, value: valueToStore,
+                        storeType: .i32Store, offset: 0)
+
+                    let rhs = f.consti32(10)
+                    // 42 + 10 = 52
+                    let oldVal = f.wasmAtomicRMW(
+                        memory: memory, lhs: address, rhs: rhs, op: .i32Add, offset: 0,
+                        ordering: .acquireRelease)
+
+                    let newVal = f.wasmAtomicLoad(
+                        memory: memory, address: address, loadType: .i32Load, offset: 0)
+
+                    return [oldVal, newVal]
+                }
+            }
+            let exports = module.loadExports()
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            let w0 = b.getProperty("w0", of: exports)
+            let r = b.callFunction(w0)
+            b.callFunction(outputFunc, withArgs: [b.arrayToStringForTesting(r)])
+        }
+        testForOutput(program: js, runner: runner, outputString: "42,52\n")
+    }
+
+    /// Test case for the new AcquireRelease memory ordering on Cmpxchg operations.
+    func testCmpxchgOrdering() throws {
+        let runner = try GetJavaScriptExecutorOrSkipTest(
+            type: .any,
+            withArguments: ["--experimental-wasm-acquire-release"])
+        let js = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                let memory = wasmModule.addMemory(minPages: 1, maxPages: 4, isShared: true)
+                wasmModule.addWasmFunction(with: [] => [.wasmi32, .wasmi32]) { f, _, _ in
+                    let valueToStore = f.consti32(42)
+                    let address = f.consti32(0)
+                    f.wasmAtomicStore(
+                        memory: memory, address: address, value: valueToStore,
+                        storeType: .i32Store, offset: 0)
+
+                    let expected = f.consti32(42)
+                    let replacement = f.consti32(1337)
+                    let oldVal = f.wasmAtomicCmpxchg(
+                        memory: memory, address: address, expected: expected,
+                        replacement: replacement, op: .i32Cmpxchg, offset: 0,
+                        ordering: .acquireRelease)
+
+                    let newVal = f.wasmAtomicLoad(
+                        memory: memory, address: address, loadType: .i32Load, offset: 0)
+
+                    return [oldVal, newVal]
+                }
+            }
+            let exports = module.loadExports()
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            let w0 = b.getProperty("w0", of: exports)
+            let r = b.callFunction(w0)
+            b.callFunction(outputFunc, withArgs: [b.arrayToStringForTesting(r)])
+        }
+        testForOutput(program: js, runner: runner, outputString: "42,1337\n")
+    }
 }

@@ -748,6 +748,11 @@ public class FuzzILLifter: Lifter {
             w.emit("BeginForOfLoop \(input(0)) -> \(outputs)")
             w.increaseIndentionLevel()
 
+        case .beginForAwaitOfLoop:
+            let outputs = instr.innerOutputs.map(lift).joined(separator: ", ")
+            w.emit("BeginForAwaitOfLoop \(input(0)) -> \(outputs)")
+            w.increaseIndentionLevel()
+
         case .beginForOfLoopWithDestruct(let op):
             let outputs = instr.innerOutputs.dropLast().map(lift)
             let label = lift(instr.innerOutputs.last!)
@@ -864,6 +869,10 @@ public class FuzzILLifter: Lifter {
 
         case .loadNewTarget:
             w.emit("\(output()) <- LoadNewTarget")
+
+        case .createMap:
+            let elems = instr.inputs.map(lift).joined(separator: ", ")
+            w.emit("\(output()) <- CreateMap [\(elems)]")
 
         case .beginWasmModule:
             w.emit("BeginWasmModule")
@@ -995,22 +1004,22 @@ public class FuzzILLifter: Lifter {
 
         case .wasmAtomicLoad(let op):
             w.emit(
-                "\(output()) <- WasmAtomicLoad \(input(0))[\(input(1)) + \(op.offset)] [\(op.loadType)]"
+                "\(output()) <- WasmAtomicLoad \(op.ordering) \(input(0))[\(input(1)) + \(op.offset)] [\(op.loadType)]"
             )
 
         case .wasmAtomicStore(let op):
             w.emit(
-                "WasmAtomicStore \(input(0))[\(input(1)) + \(op.offset)] <- \(input(2)) [\(op.storeType)]"
+                "WasmAtomicStore \(op.ordering) \(input(0))[\(input(1)) + \(op.offset)] <- \(input(2)) [\(op.storeType)]"
             )
 
         case .wasmAtomicRMW(let op):
             w.emit(
-                "\(output()) <- WasmAtomicRMW \(input(0))[\(input(1)) + \(op.offset)] \(op.op) \(input(2))"
+                "\(output()) <- WasmAtomicRMW \(op.ordering) \(input(0))[\(input(1)) + \(op.offset)] \(op.op) \(input(2))"
             )
 
         case .wasmAtomicCmpxchg(let op):
             w.emit(
-                "\(output()) <- WasmAtomicCmpxchg \(input(0))[\(input(1)) + \(op.offset)], \(input(2)), \(input(3)) [\(op.op)]"
+                "\(output()) <- WasmAtomicCmpxchg \(op.ordering) \(input(0))[\(input(1)) + \(op.offset)], \(input(2)), \(input(3)) [\(op.op)]"
             )
 
         case .wasmMemorySize(_):
@@ -1327,18 +1336,20 @@ public class FuzzILLifter: Lifter {
         case .wasmEndTryDelegate(_):
             w.decreaseIndentionLevel()
             let inputs = instr.inputs.map(lift).joined(separator: ", ")
-            if instr.numOutputs > 0 {
+            if instr.outputs.isEmpty {
+                w.emit("WasmEndTryDelegate [\(inputs)]")
+            } else {
                 let outputs = instr.outputs.map(lift).joined(separator: ", ")
                 w.emit("\(outputs) <- WasmEndTryDelegate [\(inputs)]")
-            } else {
-                w.emit("WasmEndTryDelegate [\(inputs)]")
             }
 
         case .wasmReassign(_):
             w.emit("\(input(0)) <- WasmReassign \(input(1))")
 
         case .wasmBranch(_):
-            w.emit("WasmBranch: \(instr.inputs.map(lift).joined(separator: ", "))")
+            let label = instr.inputs.first!
+            let args = instr.inputs.dropFirst().map(lift).joined(separator: ", ")
+            w.emit("WasmBranch to \(label) [\(args)]")
 
         case .wasmBranchIf(let op):
             let hint =
@@ -1349,8 +1360,39 @@ public class FuzzILLifter: Lifter {
                 }
             let condition = instr.inputs.last!
             let label = instr.inputs.first!
-            let args = instr.inputs.dropFirst().dropLast().map(lift)
-            w.emit("WasmBranchIf \(hint)\(condition) to \(label) [\(args.joined(separator: ", "))]")
+            let args = instr.inputs.dropFirst().dropLast().map(lift).joined(separator: ", ")
+            if instr.outputs.isEmpty {
+                w.emit("WasmBranchIf \(hint)\(condition) to \(label) [\(args)]")
+            } else {
+                let outputs = instr.outputs.map(lift).joined(separator: ", ")
+                w.emit("\(outputs) <- WasmBranchIf \(hint)\(condition) to \(label) [\(args)]")
+            }
+
+        case .wasmBranchOnNull(_):
+            let ref = instr.inputs.last!
+            let label = instr.inputs.first!
+            let args = instr.inputs.dropFirst().dropLast().map(lift).joined(separator: ", ")
+            if instr.outputs.isEmpty {
+                w.emit("WasmBranchOnNull \(ref) to \(label) [\(args)]")
+            } else {
+                let outputs = instr.outputs.map(lift).joined(separator: ", ")
+                w.emit(
+                    "\(outputs) <- WasmBranchOnNull \(ref) to \(label) [\(args)]"
+                )
+            }
+
+        case .wasmBranchOnNonNull(_):
+            let ref = instr.inputs.last!
+            let label = instr.inputs.first!
+            let args = instr.inputs.dropFirst().dropLast().map(lift).joined(separator: ", ")
+            if instr.outputs.isEmpty {
+                w.emit("WasmBranchOnNonNull \(ref) to \(label) [\(args)]")
+            } else {
+                let outputs = instr.outputs.map(lift).joined(separator: ", ")
+                w.emit(
+                    "\(outputs) <- WasmBranchOnNonNull \(ref) to \(label) [\(args)]"
+                )
+            }
 
         case .wasmBranchTable(let op):
             let table =

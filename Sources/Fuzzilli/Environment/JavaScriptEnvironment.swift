@@ -357,7 +357,7 @@ public class JavaScriptEnvironment: ComponentBase {
 
     public init(
         additionalBuiltins: [String: ILType] = [:], additionalObjectGroups: [ObjectGroup] = [],
-        additionalEnumerations: [ILType] = []
+        additionalEnumerations: [ILType] = [], additionalOptionsBags: [OptionsBag] = []
     ) {
 
         super.init(name: "JavaScriptEnvironment")
@@ -378,6 +378,7 @@ public class JavaScriptEnvironment: ComponentBase {
         registerObjectGroup(.jsIteratorPrototype)
         registerObjectGroup(.jsIteratorConstructor)
         registerObjectGroup(.jsGenerators)
+        registerObjectGroup(.jsAsyncGenerators)
         registerObjectGroup(.jsPromises)
         registerObjectGroup(.jsRegExps)
         registerObjectGroup(.jsFunctions)
@@ -618,6 +619,10 @@ public class JavaScriptEnvironment: ComponentBase {
         registerOptionsBag(.jsIntlSegmenterSettings)
         registerOptionsBag(.jsIntlLocaleMatcherSettings)
         registerOptionsBag(.jsIteratorZipSettings)
+
+        for optionsBag in additionalOptionsBags {
+            registerOptionsBag(optionsBag)
+        }
 
         registerTemporalFieldsObject(
             .jsTemporalPlainTimeLikeObject, forWith: false, dateFields: false, timeFields: true,
@@ -982,6 +987,7 @@ public class JavaScriptEnvironment: ComponentBase {
     public func registerOptionsBag(_ bag: OptionsBag) {
         registerObjectGroup(bag.group)
 
+        assert(!bag.properties.isEmpty, "OptionsBag with should have at least one property")
         for property in bag.properties.values {
             if property.isEnumeration {
                 assert(
@@ -1188,27 +1194,31 @@ public struct ObjectGroup {
 //
 // It is useful to be able to represent simple options bags so that we can efficiently codegen them
 public struct OptionsBag {
+    public enum SelectionMode {
+        // Select any random subset of options
+        case anySubset
+        // Select exactly one random option
+        case exactlyOne
+    }
+
     // The type of each property, not including `| .undefined`.
     // We may extend this once we start supporting more complex bags
     public var properties: [String: ILType]
     // An ObjectGroup representing this bag
     public var group: ObjectGroup
+    // Determines how the OptionsBag selects from among the possible options
+    public var selectionMode: SelectionMode
 
-    public init(name: String, properties: [String: ILType]) {
+    public init(
+        name: String, properties: [String: ILType], selectionMode: SelectionMode = .anySubset
+    ) {
         self.properties = properties
         let properties = properties.mapValues {
-            // This list can be expanded over time as long as createOptionsBag() supports this
-            assert(
-                $0.isEnumeration || $0.Is(.number | .integer | .boolean | .iterable())
-                    // Has a producing generator registered
-                    || $0.Is(.jsTemporalPlainTime)
-                    // Has explicit support in createOptionsBag
-                    || $0.Is(OptionsBag.jsTemporalRelativeTo),
-                "Found unsupported option type \($0) in options bag \(name)")
             return $0 | .undefined
         }
         self.group = ObjectGroup(
             name: name, instanceType: nil, properties: properties, overloads: [:])
+        self.selectionMode = selectionMode
     }
 }
 
@@ -1304,19 +1314,37 @@ extension ILType {
         ILType.iterable()
         + ILType.object(ofGroup: "Generator", withMethods: ["next", "return", "throw"])
 
+    public static let jsAsyncGenerator =
+        ILType.asyncIterable()
+        + ILType.object(ofGroup: "AsyncGenerator", withMethods: ["next", "return", "throw"])
+
     /// Type of a JavaScript Promise object.
     public static let jsPromise = ILType.object(
         ofGroup: "Promise", withMethods: ["catch", "finally", "then"])
 
     /// Type of a JavaScript Map object.
-    public static let jsMap =
-        ILType.iterable()
-        + ILType.object(
-            ofGroup: "Map", withProperties: ["size"],
-            withMethods: [
-                "clear", "delete", "entries", "forEach", "get", "has", "keys", "set", "values",
-                "getOrInsert", "getOrInsertComputed",
-            ])
+    public static let jsMap = createJsMapType()
+
+    /// Create a jsMap parameterized by `ofKeyType` and `ofValueType`. Note that both
+    /// types should have a group, or else type information will be lost.
+    public static func createJsMapType(
+        ofKeyType keyType: ILType? = nil, ofValueType valueType: ILType? = nil
+    ) -> ILType {
+        assert(
+            (keyType == nil) == (valueType == nil),
+            "Either both key and value types must be specified, or neither.")
+
+        let entryElementType: ILType? = keyType != nil ? (keyType! | valueType!) : nil
+        let entryType = createJsArrayType(ofElementType: entryElementType)
+
+        return ILType.iterable(ofElementType: entryType)
+            + ILType.object(
+                ofGroup: "Map", withProperties: ["size"],
+                withMethods: [
+                    "clear", "delete", "entries", "forEach", "get", "has", "keys", "set", "values",
+                    "getOrInsert", "getOrInsertComputed",
+                ])
+    }
 
     /// Type of a JavaScript WeakMap object.
     public static let jsWeakMap = ILType.object(
@@ -2209,6 +2237,17 @@ extension ObjectGroup {
             "next": [.opt(.jsAnything)] => .object(withProperties: ["done", "value"]),
             "return": [.opt(.jsAnything)] => .object(withProperties: ["done", "value"]),
             "throw": [.opt(.jsAnything)] => .object(withProperties: ["done", "value"]),
+        ]
+    )
+
+    public static let jsAsyncGenerators = ObjectGroup(
+        name: "AsyncGenerator",
+        instanceType: .jsAsyncGenerator,
+        properties: [:],
+        methods: [
+            "next": [.opt(.jsAnything)] => .jsPromise,
+            "return": [.opt(.jsAnything)] => .jsPromise,
+            "throw": [.opt(.jsAnything)] => .jsPromise,
         ]
     )
 

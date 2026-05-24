@@ -1348,6 +1348,40 @@ public enum Fuzzilli_Protobuf_WasmAtomicStoreType: SwiftProtobuf.Enum, Swift.Cas
 
 }
 
+public enum Fuzzilli_Protobuf_WasmMemoryOrdering: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public typealias RawValue = Int
+  case sequentiallyConsistent // = 0
+  case acquireRelease // = 1
+  case UNRECOGNIZED(Int)
+
+  public init() {
+    self = .sequentiallyConsistent
+  }
+
+  public init?(rawValue: Int) {
+    switch rawValue {
+    case 0: self = .sequentiallyConsistent
+    case 1: self = .acquireRelease
+    default: self = .UNRECOGNIZED(rawValue)
+    }
+  }
+
+  public var rawValue: Int {
+    switch self {
+    case .sequentiallyConsistent: return 0
+    case .acquireRelease: return 1
+    case .UNRECOGNIZED(let i): return i
+    }
+  }
+
+  // The compiler won't synthesize support with the UNRECOGNIZED case.
+  public static let allCases: [Fuzzilli_Protobuf_WasmMemoryOrdering] = [
+    .sequentiallyConsistent,
+    .acquireRelease,
+  ]
+
+}
+
 public enum Fuzzilli_Protobuf_WasmAtomicRMWType: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case i32Add // = 0
@@ -5864,6 +5898,26 @@ public struct Fuzzilli_Protobuf_WasmRefCast: Sendable {
   fileprivate var _type: Fuzzilli_Protobuf_WasmILType? = nil
 }
 
+public struct Fuzzilli_Protobuf_WasmBranchOnNull: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Fuzzilli_Protobuf_WasmBranchOnNonNull: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 public struct Fuzzilli_Protobuf_WasmRefI31: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -5897,6 +5951,8 @@ public struct Fuzzilli_Protobuf_WasmAtomicLoad: Sendable {
 
   public var offset: Int64 = 0
 
+  public var ordering: Fuzzilli_Protobuf_WasmMemoryOrdering = .sequentiallyConsistent
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -5910,6 +5966,8 @@ public struct Fuzzilli_Protobuf_WasmAtomicStore: Sendable {
   public var storeType: Fuzzilli_Protobuf_WasmAtomicStoreType = .i32Store
 
   public var offset: Int64 = 0
+
+  public var ordering: Fuzzilli_Protobuf_WasmMemoryOrdering = .sequentiallyConsistent
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -5925,6 +5983,8 @@ public struct Fuzzilli_Protobuf_WasmAtomicRMW: Sendable {
 
   public var offset: Int64 = 0
 
+  public var ordering: Fuzzilli_Protobuf_WasmMemoryOrdering = .sequentiallyConsistent
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -5938,6 +5998,8 @@ public struct Fuzzilli_Protobuf_WasmAtomicCmpxchg: Sendable {
   public var op: Fuzzilli_Protobuf_WasmAtomicCmpxchgType = .i32Cmpxchg
 
   public var offset: Int64 = 0
+
+  public var ordering: Fuzzilli_Protobuf_WasmMemoryOrdering = .sequentiallyConsistent
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -6214,6 +6276,47 @@ public struct Fuzzilli_Protobuf_EndBundleModuleEntryPoint: Sendable {
   public init() {}
 }
 
+public struct Fuzzilli_Protobuf_CreateMap: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var keyGroupName: String {
+    get {_keyGroupName ?? String()}
+    set {_keyGroupName = newValue}
+  }
+  /// Returns true if `keyGroupName` has been explicitly set.
+  public var hasKeyGroupName: Bool {self._keyGroupName != nil}
+  /// Clears the value of `keyGroupName`. Subsequent reads from it will return its default value.
+  public mutating func clearKeyGroupName() {self._keyGroupName = nil}
+
+  public var valueGroupName: String {
+    get {_valueGroupName ?? String()}
+    set {_valueGroupName = newValue}
+  }
+  /// Returns true if `valueGroupName` has been explicitly set.
+  public var hasValueGroupName: Bool {self._valueGroupName != nil}
+  /// Clears the value of `valueGroupName`. Subsequent reads from it will return its default value.
+  public mutating func clearValueGroupName() {self._valueGroupName = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _keyGroupName: String? = nil
+  fileprivate var _valueGroupName: String? = nil
+}
+
+public struct Fuzzilli_Protobuf_BeginForAwaitOfLoop: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "fuzzilli.protobuf"
@@ -6308,6 +6411,10 @@ extension Fuzzilli_Protobuf_WasmAtomicLoadType: SwiftProtobuf._ProtoNameProvidin
 
 extension Fuzzilli_Protobuf_WasmAtomicStoreType: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0I32_STORE\0\u{1}I64_STORE\0\u{1}I32_STORE_8\0\u{1}I32_STORE_16\0\u{1}I64_STORE_8\0\u{1}I64_STORE_16\0\u{1}I64_STORE_32\0")
+}
+
+extension Fuzzilli_Protobuf_WasmMemoryOrdering: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SEQUENTIALLY_CONSISTENT\0\u{1}ACQUIRE_RELEASE\0")
 }
 
 extension Fuzzilli_Protobuf_WasmAtomicRMWType: SwiftProtobuf._ProtoNameProviding {
@@ -15331,6 +15438,44 @@ extension Fuzzilli_Protobuf_WasmRefCast: SwiftProtobuf.Message, SwiftProtobuf._M
   }
 }
 
+extension Fuzzilli_Protobuf_WasmBranchOnNull: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".WasmBranchOnNull"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Fuzzilli_Protobuf_WasmBranchOnNull, rhs: Fuzzilli_Protobuf_WasmBranchOnNull) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Fuzzilli_Protobuf_WasmBranchOnNonNull: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".WasmBranchOnNonNull"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Fuzzilli_Protobuf_WasmBranchOnNonNull, rhs: Fuzzilli_Protobuf_WasmBranchOnNonNull) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
 extension Fuzzilli_Protobuf_WasmRefI31: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WasmRefI31"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}isShared\0")
@@ -15393,7 +15538,7 @@ extension Fuzzilli_Protobuf_WasmI31Get: SwiftProtobuf.Message, SwiftProtobuf._Me
 
 extension Fuzzilli_Protobuf_WasmAtomicLoad: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WasmAtomicLoad"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}loadType\0\u{1}offset\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}loadType\0\u{1}offset\0\u{1}ordering\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -15403,6 +15548,7 @@ extension Fuzzilli_Protobuf_WasmAtomicLoad: SwiftProtobuf.Message, SwiftProtobuf
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularEnumField(value: &self.loadType) }()
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.offset) }()
+      case 3: try { try decoder.decodeSingularEnumField(value: &self.ordering) }()
       default: break
       }
     }
@@ -15415,12 +15561,16 @@ extension Fuzzilli_Protobuf_WasmAtomicLoad: SwiftProtobuf.Message, SwiftProtobuf
     if self.offset != 0 {
       try visitor.visitSingularInt64Field(value: self.offset, fieldNumber: 2)
     }
+    if self.ordering != .sequentiallyConsistent {
+      try visitor.visitSingularEnumField(value: self.ordering, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Fuzzilli_Protobuf_WasmAtomicLoad, rhs: Fuzzilli_Protobuf_WasmAtomicLoad) -> Bool {
     if lhs.loadType != rhs.loadType {return false}
     if lhs.offset != rhs.offset {return false}
+    if lhs.ordering != rhs.ordering {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -15428,7 +15578,7 @@ extension Fuzzilli_Protobuf_WasmAtomicLoad: SwiftProtobuf.Message, SwiftProtobuf
 
 extension Fuzzilli_Protobuf_WasmAtomicStore: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WasmAtomicStore"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}storeType\0\u{1}offset\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}storeType\0\u{1}offset\0\u{1}ordering\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -15438,6 +15588,7 @@ extension Fuzzilli_Protobuf_WasmAtomicStore: SwiftProtobuf.Message, SwiftProtobu
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularEnumField(value: &self.storeType) }()
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.offset) }()
+      case 3: try { try decoder.decodeSingularEnumField(value: &self.ordering) }()
       default: break
       }
     }
@@ -15450,12 +15601,16 @@ extension Fuzzilli_Protobuf_WasmAtomicStore: SwiftProtobuf.Message, SwiftProtobu
     if self.offset != 0 {
       try visitor.visitSingularInt64Field(value: self.offset, fieldNumber: 2)
     }
+    if self.ordering != .sequentiallyConsistent {
+      try visitor.visitSingularEnumField(value: self.ordering, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Fuzzilli_Protobuf_WasmAtomicStore, rhs: Fuzzilli_Protobuf_WasmAtomicStore) -> Bool {
     if lhs.storeType != rhs.storeType {return false}
     if lhs.offset != rhs.offset {return false}
+    if lhs.ordering != rhs.ordering {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -15463,7 +15618,7 @@ extension Fuzzilli_Protobuf_WasmAtomicStore: SwiftProtobuf.Message, SwiftProtobu
 
 extension Fuzzilli_Protobuf_WasmAtomicRMW: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WasmAtomicRMW"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}op\0\u{1}offset\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}op\0\u{1}offset\0\u{1}ordering\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -15473,6 +15628,7 @@ extension Fuzzilli_Protobuf_WasmAtomicRMW: SwiftProtobuf.Message, SwiftProtobuf.
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularEnumField(value: &self.op) }()
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.offset) }()
+      case 3: try { try decoder.decodeSingularEnumField(value: &self.ordering) }()
       default: break
       }
     }
@@ -15485,12 +15641,16 @@ extension Fuzzilli_Protobuf_WasmAtomicRMW: SwiftProtobuf.Message, SwiftProtobuf.
     if self.offset != 0 {
       try visitor.visitSingularInt64Field(value: self.offset, fieldNumber: 2)
     }
+    if self.ordering != .sequentiallyConsistent {
+      try visitor.visitSingularEnumField(value: self.ordering, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Fuzzilli_Protobuf_WasmAtomicRMW, rhs: Fuzzilli_Protobuf_WasmAtomicRMW) -> Bool {
     if lhs.op != rhs.op {return false}
     if lhs.offset != rhs.offset {return false}
+    if lhs.ordering != rhs.ordering {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -15498,7 +15658,7 @@ extension Fuzzilli_Protobuf_WasmAtomicRMW: SwiftProtobuf.Message, SwiftProtobuf.
 
 extension Fuzzilli_Protobuf_WasmAtomicCmpxchg: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WasmAtomicCmpxchg"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}op\0\u{1}offset\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}op\0\u{1}offset\0\u{1}ordering\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -15508,6 +15668,7 @@ extension Fuzzilli_Protobuf_WasmAtomicCmpxchg: SwiftProtobuf.Message, SwiftProto
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularEnumField(value: &self.op) }()
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.offset) }()
+      case 3: try { try decoder.decodeSingularEnumField(value: &self.ordering) }()
       default: break
       }
     }
@@ -15520,12 +15681,16 @@ extension Fuzzilli_Protobuf_WasmAtomicCmpxchg: SwiftProtobuf.Message, SwiftProto
     if self.offset != 0 {
       try visitor.visitSingularInt64Field(value: self.offset, fieldNumber: 2)
     }
+    if self.ordering != .sequentiallyConsistent {
+      try visitor.visitSingularEnumField(value: self.ordering, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Fuzzilli_Protobuf_WasmAtomicCmpxchg, rhs: Fuzzilli_Protobuf_WasmAtomicCmpxchg) -> Bool {
     if lhs.op != rhs.op {return false}
     if lhs.offset != rhs.offset {return false}
+    if lhs.ordering != rhs.ordering {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -16092,6 +16257,64 @@ extension Fuzzilli_Protobuf_EndBundleModuleEntryPoint: SwiftProtobuf.Message, Sw
   }
 
   public static func ==(lhs: Fuzzilli_Protobuf_EndBundleModuleEntryPoint, rhs: Fuzzilli_Protobuf_EndBundleModuleEntryPoint) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Fuzzilli_Protobuf_CreateMap: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".CreateMap"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}keyGroupName\0\u{1}valueGroupName\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self._keyGroupName) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self._valueGroupName) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._keyGroupName {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 1)
+    } }()
+    try { if let v = self._valueGroupName {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Fuzzilli_Protobuf_CreateMap, rhs: Fuzzilli_Protobuf_CreateMap) -> Bool {
+    if lhs._keyGroupName != rhs._keyGroupName {return false}
+    if lhs._valueGroupName != rhs._valueGroupName {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Fuzzilli_Protobuf_BeginForAwaitOfLoop: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".BeginForAwaitOfLoop"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Fuzzilli_Protobuf_BeginForAwaitOfLoop, rhs: Fuzzilli_Protobuf_BeginForAwaitOfLoop) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

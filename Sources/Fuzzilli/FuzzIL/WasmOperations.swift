@@ -1123,6 +1123,11 @@ final class WasmMemorySize: WasmOperation {
     }
 }
 
+public enum WasmMemoryOrdering: UInt8, CaseIterable {
+    case sequentiallyConsistent = 0
+    case acquireRelease = 1
+}
+
 public enum WasmAtomicLoadType: UInt8, CaseIterable {
     case i32Load = 0x10
     case i64Load = 0x11
@@ -1539,7 +1544,9 @@ final class WasmBranch: WasmOperation {
     override var opcode: Opcode { .wasmBranch(self) }
 
     init(parameterCount: Int) {
-        super.init(numInputs: 1 + parameterCount, requiredContext: [.wasmFunction])
+        super.init(
+            numInputs: 1 + parameterCount,
+            requiredContext: [.wasmFunction])
     }
 
     var parameterCount: Int { numInputs - 1 }
@@ -1553,8 +1560,8 @@ final class WasmBranchIf: WasmOperation {
         self.hint = hint
         // The inputs are the label, the arguments and the condition.
         super.init(
-            numInputs: 1 + parameterCount + 1, attributes: [.isMutable],
-            requiredContext: [.wasmFunction])
+            numInputs: 1 + parameterCount + 1, numOutputs: parameterCount,
+            attributes: [.isMutable], requiredContext: [.wasmFunction])
     }
 
     var parameterCount: Int { numInputs - 2 }
@@ -1573,6 +1580,34 @@ final class WasmBranchTable: WasmOperation {
     }
 
     var parameterCount: Int { numInputs - valueCount - 2 }
+}
+
+final class WasmBranchOnNull: WasmOperation {
+    override var opcode: Opcode { .wasmBranchOnNull(self) }
+
+    init(parameterCount: Int) {
+        // The inputs are the label, the arguments and the reference.
+        // The outputs are the non-null reference and the arguments (with branch target types).
+        super.init(
+            numInputs: 1 + parameterCount + 1, numOutputs: parameterCount + 1,
+            requiredContext: [.wasmFunction])
+    }
+
+    var parameterCount: Int { numInputs - 2 }
+}
+
+final class WasmBranchOnNonNull: WasmOperation {
+    override var opcode: Opcode { .wasmBranchOnNonNull(self) }
+
+    init(parameterCount: Int) {
+        // The inputs are the label, the arguments and the reference.
+        // The outputs are the arguments again (with branch target types).
+        super.init(
+            numInputs: 1 + parameterCount + 1, numOutputs: parameterCount,
+            requiredContext: [.wasmFunction])
+    }
+
+    var parameterCount: Int { numInputs - 2 }
 }
 
 // TODO: make this comprehensive, currently only works for locals, or assumes every thing it reassigns to is a local.
@@ -2416,10 +2451,16 @@ final class WasmAtomicLoad: WasmOperation {
     let loadType: WasmAtomicLoadType
     /// The static offset from the base address.
     let offset: Int64
+    /// The memory ordering of the load.
+    let ordering: WasmMemoryOrdering
 
-    init(loadType: WasmAtomicLoadType, offset: Int64) {
+    init(
+        loadType: WasmAtomicLoadType, offset: Int64,
+        ordering: WasmMemoryOrdering = .sequentiallyConsistent
+    ) {
         self.loadType = loadType
         self.offset = offset
+        self.ordering = ordering
         super.init(
             numInputs: 2, numOutputs: 1, attributes: [.isMutable], requiredContext: [.wasmFunction])
     }
@@ -2434,10 +2475,16 @@ final class WasmAtomicStore: WasmOperation {
     let storeType: WasmAtomicStoreType
     /// The static offset from the base address.
     let offset: Int64
+    /// The memory ordering of the store.
+    let ordering: WasmMemoryOrdering
 
-    init(storeType: WasmAtomicStoreType, offset: Int64) {
+    init(
+        storeType: WasmAtomicStoreType, offset: Int64,
+        ordering: WasmMemoryOrdering = .sequentiallyConsistent
+    ) {
         self.storeType = storeType
         self.offset = offset
+        self.ordering = ordering
         super.init(
             numInputs: 3, numOutputs: 0, attributes: [.isMutable], requiredContext: [.wasmFunction])
     }
@@ -2448,10 +2495,14 @@ final class WasmAtomicRMW: WasmOperation {
 
     let op: WasmAtomicRMWType
     let offset: Int64
+    let ordering: WasmMemoryOrdering
 
-    init(op: WasmAtomicRMWType, offset: Int64) {
+    init(
+        op: WasmAtomicRMWType, offset: Int64, ordering: WasmMemoryOrdering = .sequentiallyConsistent
+    ) {
         self.op = op
         self.offset = offset
+        self.ordering = ordering
         super.init(
             numInputs: 3, numOutputs: 1, attributes: [.isMutable], requiredContext: [.wasmFunction])
     }
@@ -2494,10 +2545,15 @@ final class WasmAtomicCmpxchg: WasmOperation {
 
     let op: WasmAtomicCmpxchgType
     let offset: Int64
+    let ordering: WasmMemoryOrdering
 
-    init(op: WasmAtomicCmpxchgType, offset: Int64) {
+    init(
+        op: WasmAtomicCmpxchgType, offset: Int64,
+        ordering: WasmMemoryOrdering = .sequentiallyConsistent
+    ) {
         self.op = op
         self.offset = offset
+        self.ordering = ordering
         super.init(
             numInputs: 4, numOutputs: 1, attributes: [.isMutable], requiredContext: [.wasmFunction])
     }

@@ -44,6 +44,7 @@ public class OperationMutator: BaseInstructionMutator {
 
     private func mutateOperation(_ instr: Instruction, _ b: ProgramBuilder) -> Instruction {
         let newOp: Operation
+        var inouts = instr.inouts
         switch instr.op.opcode {
         case .loadInteger(let op):
             // Half the time we want to just hit the regular path
@@ -477,9 +478,11 @@ public class OperationMutator: BaseInstructionMutator {
                     $0.numberType() == op.loadType.numberType()
                 }))
             let newStaticOffset = b.randomInt()
+            let newOrdering = chooseUniform(from: WasmMemoryOrdering.allCases)
             newOp = WasmAtomicLoad(
                 loadType: newLoadType,
-                offset: newStaticOffset
+                offset: newStaticOffset,
+                ordering: newOrdering
             )
         case .wasmAtomicStore(let op):
             let newStoreType = chooseUniform(
@@ -487,20 +490,24 @@ public class OperationMutator: BaseInstructionMutator {
                     $0.numberType() == op.storeType.numberType()
                 }))
             let newStaticOffset = b.randomInt()
+            let newOrdering = chooseUniform(from: WasmMemoryOrdering.allCases)
             newOp = WasmAtomicStore(
                 storeType: newStoreType,
-                offset: newStaticOffset
+                offset: newStaticOffset,
+                ordering: newOrdering
             )
         case .wasmAtomicRMW(let op):
             let newOpType = chooseUniform(
                 from: WasmAtomicRMWType.allCases.filter({ $0.type() == op.op.type() }))
             let newOffset = b.randomInt()
-            newOp = WasmAtomicRMW(op: newOpType, offset: newOffset)
+            let newOrdering = chooseUniform(from: WasmMemoryOrdering.allCases)
+            newOp = WasmAtomicRMW(op: newOpType, offset: newOffset, ordering: newOrdering)
         case .wasmAtomicCmpxchg(let op):
             let newOpType = chooseUniform(
                 from: WasmAtomicCmpxchgType.allCases.filter({ $0.type() == op.op.type() }))
             let newOffset = b.randomInt()
-            newOp = WasmAtomicCmpxchg(op: newOpType, offset: newOffset)
+            let newOrdering = chooseUniform(from: WasmMemoryOrdering.allCases)
+            newOp = WasmAtomicCmpxchg(op: newOpType, offset: newOffset, ordering: newOrdering)
         case .constSimd128(_):
             newOp = ConstSimd128(
                 value: (0..<16).map { _ in UInt8.random(in: UInt8.min...UInt8.max) })
@@ -616,6 +623,15 @@ public class OperationMutator: BaseInstructionMutator {
                 newType = ILType.wasmRef(.Index(), nullability: !nullable)
             }
             newOp = WasmRefTest(refType: newType)
+        case .importVariables(let op):
+            var names = op.importNames
+            let module = instr.inputs[0]
+            assert(b.type(of: module).Is(.jsModule()))
+            let exports = b.type(of: module).exports.keys
+            assert(!exports.isEmpty)
+            names.append(exports.randomElement()!)
+            newOp = ImportVariables(importNames: names)
+            inouts.append(b.nextVariable())
         // Unexpected operations to make the switch fully exhaustive.
         case .nop(_),
             .loadUndefined(_),
@@ -712,6 +728,7 @@ public class OperationMutator: BaseInstructionMutator {
             .beginForInLoop(_),
             .endForInLoop(_),
             .beginForOfLoop(_),
+            .beginForAwaitOfLoop(_),
             .beginForOfLoopWithDestruct(_),
             .endForOfLoop(_),
             .beginRepeatLoop(_),
@@ -756,7 +773,7 @@ public class OperationMutator: BaseInstructionMutator {
             .beginBundleModuleEntryPoint(_),
             .endBundleModuleEntryPoint(_),
             .exportVariables(_),
-            .importVariables(_),
+            .createMap(_),
             // Wasm instructions
             .beginWasmModule(_),
             .endWasmModule(_),
@@ -808,6 +825,8 @@ public class OperationMutator: BaseInstructionMutator {
             .wasmBeginTryDelegate(_),
             .wasmEndTryDelegate(_),
             .wasmBranch(_),
+            .wasmBranchOnNull(_),
+            .wasmBranchOnNonNull(_),
             .wasmBranchTable(_),
             .wasmBeginElse(_),
             .wasmEndIf(_),
@@ -856,7 +875,7 @@ public class OperationMutator: BaseInstructionMutator {
         // This assert is here to prevent subtle bugs if we ever decide to add flags that are "alive" during program building / mutation.
         // If we add flags, remove this assert and change the code below.
         assert(instr.flags == .empty)
-        return Instruction(newOp, inouts: instr.inouts)
+        return Instruction(newOp, inouts: inouts)
     }
 
     private func extendVariadicOperation(_ instr: Instruction, _ b: ProgramBuilder) -> Instruction {
@@ -880,8 +899,13 @@ public class OperationMutator: BaseInstructionMutator {
 
         switch instr.op.opcode {
         case .createArray(let op):
-            newOp = CreateArray(numInitialValues: op.numInitialValues + 1)
-            inputs.append(b.randomJsVariable())
+            newOp = CreateArray(
+                numInitialValues: op.numInitialValues + 1, elementGroupName: op.elementGroupName)
+            let elementType = op.elementGroupName.map {
+                b.fuzzer.environment.type(ofGroup: $0)
+            }
+            inputs.append(
+                elementType.map { b.randomVariable(forUseAs: $0) } ?? b.randomJsVariable())
         case .createArrayWithSpread(let op):
             let spreads = op.spreads + [Bool.random()]
             inputs.append(b.randomJsVariable())
@@ -943,12 +967,23 @@ public class OperationMutator: BaseInstructionMutator {
             // `ProgramBuilder.buildIntoTypeGroup` which handles "exporting" of defined types via
             // the WasmEndTypeGroup instruction.
             return instr
-        case .exportVariables(_):
-            // TODO(marja): Implement
-            return instr
-        case .importVariables(_):
-            // TODO(marja): Implement
-            return instr
+        case .exportVariables(let op):
+            var names = op.exportNames
+            names.append(b.randomPropertyName())
+            inputs.append(b.randomJsVariable())
+            newOp = ExportVariables(exportNames: names)
+        case .createMap(let op):
+            newOp = CreateMap(
+                numInitialValues: op.numInitialValues + 1, keyGroupName: op.keyGroupName,
+                valueGroupName: op.valueGroupName)
+            var elementType = ILType.jsArray
+            if let keyGroup = op.keyGroupName, let valueGroup = op.valueGroupName {
+                let keyType = b.fuzzer.environment.type(ofGroup: keyGroup)
+                let valueType = b.fuzzer.environment.type(ofGroup: valueGroup)
+                elementType = ILType.createJsArrayType(ofElementType: keyType | valueType)
+            }
+            inputs.append(b.randomVariable(forUseAs: elementType))
+
         default:
             fatalError("Unhandled Operation: \(type(of: instr.op))")
         }

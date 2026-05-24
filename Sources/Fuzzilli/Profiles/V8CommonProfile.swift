@@ -633,6 +633,61 @@ public let V8RegExpFuzzer = ProgramTemplate("RegExpFuzzer") { b in
     b.build(n: 15)
 }
 
+public let HomomorphicFeedbackFuzzer = ProgramTemplate("HomomorphicFeedbackFuzzer") { b in
+    b.buildPrefix()
+    b.build(n: 10)
+
+    let numObjects = Int.random(in: 5...8)
+    let commonProp = b.randomCustomPropertyName()
+
+    // Add a different property to each object.
+    var objects = (0..<numObjects).map { _ in
+        b.createObject(with: [b.randomCustomPropertyName(): b.randomJsVariable()])
+    }
+
+    // Add the common property.
+    for obj in objects {
+        let value = b.randomJsVariable()
+        b.setProperty(commonProp, of: obj, to: value)
+    }
+
+    // Again, add a different property to each object after the common one.
+    for obj in objects {
+        let finalProp = b.randomCustomPropertyName()
+        let value = b.randomJsVariable()
+        b.setProperty(finalProp, of: obj, to: value)
+    }
+
+    let f = b.buildPlainFunction(with: .parameters(.object())) { args in
+        let o = args[0]
+
+        // Eagerly load the target property (sometimes)
+        if probability(0.7) {
+            b.getProperty(commonProp, of: o)
+        }
+        b.build(n: 20)
+        b.doReturn(b.randomJsVariable())
+    }
+
+    b.eval("%PrepareFunctionForOptimization(%@)", with: [f])
+
+    // Call the target function with 5 of the objects (but not all)
+    let warmupObjects = Array(objects.prefix(5))
+    let warmupArray = b.createArray(with: warmupObjects)
+
+    b.buildForOfLoop(warmupArray) { obj in
+        b.callFunction(f, withArgs: [obj])
+    }
+
+    b.eval("%OptimizeFunctionOnNextCall(%@)", with: [f])
+
+    // Call the target function with all the objects
+    let allObjectsArray = b.createArray(with: objects)
+    b.buildForOfLoop(allObjectsArray) { obj in
+        b.callFunction(f, withArgs: [obj])
+    }
+}
+
 // Emits calls with recursive calls of limited depth.
 public let LazyDeoptFuzzer = ProgramTemplate("LazyDeoptFuzzer") { b in
     b.buildPrefix()
@@ -702,7 +757,7 @@ public let WasmDeoptFuzzer = WasmProgramTemplate("WasmDeoptFuzzer") { b in
         let table = wasmModule.addTable(
             elementType: .wasmFuncRef(),
             minSize: numCallees,
-            definedEntryValues: callees.flatMap { [$0, calleeSignatureDef] },
+            definedSignatures: callees.flatMap { [$0, calleeSignatureDef] },
             isTable64: useTable64)
 
         wasmModule.addWasmFunction(with: mainSignature) { function, label, args in
@@ -1051,6 +1106,7 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         "--experimental-fuzzing",
         "--js-staging",
         "--wasm-staging",
+        "--experimental-wasm-acquire-release",
         "--wasm-fast-api",
         "--expose-fast-api",
         "--wasm-test-streaming",  // WebAssembly.compileStreaming & WebAssembly.instantiateStreaming()
@@ -1076,6 +1132,10 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
             probability(0.5)
                 ? "--turbo-instruction-scheduling"
                 : "--turbo-stress-instruction-scheduling")
+    }
+
+    if probability(0.1) {
+        args.append("--no-flush-bytecode")
     }
 
     if probability(0.1) {
@@ -1247,6 +1307,11 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         args.append("--private-field-bytecodes")
     }
 
+    // Choose the bytecode verification level: default (currently none), light or full.
+    if probability(0.67) {
+        args.append(probability(0.5) ? "--verify-bytecode-light" : "--verify-bytecode-full")
+    }
+
     //
     // Sometimes enable additional verification/stressing logic (which may be fairly expensive).
     //
@@ -1283,6 +1348,12 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         if probability(0.5) {
             args.append("--stress-lazy-source-positions")
         }
+        // This stressing is usually useful, but also run with the production configuration
+        // sometimes too. Similarly to the above, in sandbox fuzzers it'd trigger benign CHECKs
+        // hence avoided.
+        if probability(0.9) {
+            args.append("--stress-lazy")
+        }
     }
 
     if probability(0.1) {
@@ -1309,7 +1380,6 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         }
         if probability(0.5) {
             args.append("--stress-flush-code")
-            args.append("--flush-bytecode")
         }
         if probability(0.5) {
             args.append("--wasm-code-gc")
@@ -1410,7 +1480,6 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         chooseBooleanFlag("wasm-math-intrinsics")
         chooseBooleanFlag("wasm-bulkmem-inlining")
         chooseBooleanFlag("wasm-lazy-compilation")
-        chooseBooleanFlag("wasm-lazy-validation")
         chooseBooleanFlag("asm-wasm-lazy-compilation")
         chooseBooleanFlag("validate-asm")
     }

@@ -503,7 +503,7 @@ public struct JSTyper: Analyzer {
     }
 
     mutating func addSignatureType(
-        def: Variable, signature: WasmSignature, inputs: ArraySlice<Variable>
+        def: Variable, signature: WasmSignature, inputs: ArraySlice<Variable>, isAdHoc: Bool = false
     ) {
         assert(isWithinTypeGroup)
         var inputs = inputs.makeIterator()
@@ -560,7 +560,8 @@ public struct JSTyper: Analyzer {
             .wasmTypeDef(
                 description: WasmSignatureTypeDescription(
                     signature: resolvedParameterTypes => resolvedOutputTypes,
-                    typeGroupIndex: tgIndex)))
+                    typeGroupIndex: tgIndex,
+                    isAdHoc: isAdHoc)))
         typeGroups[typeGroups.count - 1].append(def)
     }
 
@@ -691,12 +692,12 @@ public struct JSTyper: Analyzer {
     }
 
     public mutating func finalizeJsModule() -> ILType {
+        // Handle duplicate keys in seenExports gracefully (see ProgramBuilder.generateExport).
         let exportsMap = Dictionary(
-            uniqueKeysWithValues: seenExports.map {
-                ($0, state.type(of: $1))
-            })
+            seenExports.map { ($0, state.type(of: $1)) },
+            uniquingKeysWith: { (first, last) in last }
+        )
         let moduleType = ILType.jsModule(exports: exportsMap)
-
         seenExports = []
         return moduleType
     }
@@ -1107,6 +1108,41 @@ public struct JSTyper: Analyzer {
                 } else {
                     setType(of: instr.output, to: op.type)
                 }
+            case .wasmBranchIf(_):
+                let labelType = type(of: instr.input(0))
+                let parameterTypes = labelType.wasmLabelType!.parameters
+                assert(instr.outputs.count == parameterTypes.count)
+                for (output, parameterType) in zip(instr.outputs, parameterTypes) {
+                    setType(of: output, to: parameterType)
+                }
+
+            case .wasmBranchOnNull(_):
+                let labelType = type(of: instr.input(0))
+                let parameterTypes = labelType.wasmLabelType!.parameters
+                // There is one more output (the non-null "condition" for the br_on_null) which will be typed below.
+                assert(instr.outputs.count == parameterTypes.count + 1)
+                for (output, parameterType) in zip(instr.outputs, parameterTypes) {
+                    setType(of: output, to: parameterType)
+                }
+                let refType = type(of: instr.inputs.last!)
+                guard let wasmRefType = refType.wasmReferenceType
+                else {
+                    fatalError("BranchOnNull reference is not a valid wasm reference type.")
+                }
+                setType(
+                    of: instr.outputs.last!,
+                    to: .wasmRef(wasmRefType.kind, nullability: false))
+
+            case .wasmBranchOnNonNull(_):
+                let labelType = type(of: instr.input(0))
+                let parameterTypes = labelType.wasmLabelType!.parameters
+                // The label expects the arguments including the non-null reference.
+                // The fallthrough path only has the arguments excluding the reference.
+                assert(instr.outputs.count == parameterTypes.count - 1)
+                for (output, parameterType) in zip(instr.outputs, parameterTypes) {
+                    setType(of: output, to: parameterType)
+                }
+
             case .wasmAnyConvertExtern(_):
                 // TODO(pawkra): forward shared bit & update the comment
                 // any.convert_extern forwards the nullability bit from the input.
@@ -1120,12 +1156,14 @@ public struct JSTyper: Analyzer {
                     of: instr.output, to: .wasmRef(.WasmExtern, shared: false, nullability: null))
             case .wasmDefineAdHocSignatureType(let op):
                 startTypeGroup()
-                addSignatureType(def: instr.output, signature: op.signature, inputs: instr.inputs)
+                addSignatureType(
+                    def: instr.output, signature: op.signature, inputs: instr.inputs, isAdHoc: true)
                 finishTypeGroup()
                 registerWasmTypeDef(instr.output)
             case .wasmDefineAdHocModuleSignatureType(let op):
                 startTypeGroup()
-                addSignatureType(def: instr.output, signature: op.signature, inputs: instr.inputs)
+                addSignatureType(
+                    def: instr.output, signature: op.signature, inputs: instr.inputs, isAdHoc: true)
                 finishTypeGroup()
                 registerWasmTypeDef(instr.output)
             default:
@@ -1344,13 +1382,20 @@ public struct JSTyper: Analyzer {
                 .functionAndConstructor(
                     inferSubroutineParameterList(of: op, at: instr.index) => .jsAnything))
         case .beginArrowFunction(let op as BeginAnyFunction),
-            .beginGeneratorFunction(let op as BeginAnyFunction),
             .beginAsyncFunction(let op as BeginAnyFunction),
-            .beginAsyncArrowFunction(let op as BeginAnyFunction),
-            .beginAsyncGeneratorFunction(let op as BeginAnyFunction):
+            .beginAsyncArrowFunction(let op as BeginAnyFunction):
             set(
                 instr.output,
                 .function(inferSubroutineParameterList(of: op, at: instr.index) => .jsAnything))
+        case .beginGeneratorFunction(let op):
+            set(
+                instr.output,
+                .function(inferSubroutineParameterList(of: op, at: instr.index) => .iterable()))
+        case .beginAsyncGeneratorFunction(let op):
+            set(
+                instr.output,
+                .function(inferSubroutineParameterList(of: op, at: instr.index) => .asyncIterable())
+            )
         case .beginConstructor(let op):
             set(
                 instr.output,
@@ -1475,6 +1520,7 @@ public struct JSTyper: Analyzer {
         case .beginWhileLoopBody,
             .beginForInLoop,
             .beginForOfLoop,
+            .beginForAwaitOfLoop,
             .beginForOfLoopWithDestruct,
             .beginRepeatLoop,
             .beginCodeString:
@@ -1553,11 +1599,15 @@ public struct JSTyper: Analyzer {
                 // The function variable may have been reassigned to a different function, in which case we may not have a signature anymore.
                 if let signature = funcType.signature {
                     switch begin.op.opcode {
-                    case .beginGeneratorFunction,
-                        .beginAsyncGeneratorFunction:
+                    case .beginGeneratorFunction:
                         setType(
                             of: begin.output,
                             to: funcType.settingSignature(to: signature.parameters => .jsGenerator))
+                    case .beginAsyncGeneratorFunction:
+                        setType(
+                            of: begin.output,
+                            to: funcType.settingSignature(
+                                to: signature.parameters => .jsAsyncGenerator))
                     case .beginAsyncFunction,
                         .beginAsyncArrowFunction:
                         setType(
@@ -2243,6 +2293,10 @@ public struct JSTyper: Analyzer {
             set(instr.innerOutput(0), .jsAnything)
             set(instr.innerOutput(1), .jsLoopLabel)
 
+        case .beginForAwaitOfLoop:
+            set(instr.innerOutput(0), .jsAnything)
+            set(instr.innerOutput(1), .jsLoopLabel)
+
         case .beginForOfLoopWithDestruct:
             for v in instr.innerOutputs.dropLast() {
                 set(v, .jsAnything)
@@ -2386,6 +2440,15 @@ public struct JSTyper: Analyzer {
                 // be used as a self reference again or resolved to a forward reference at a later
                 // point in time again.
                 selfReferences[instr.input(0)] = []
+            }
+
+        case .createMap(let op):
+            if let keyGroupName = op.keyGroupName, let valueGroupName = op.valueGroupName {
+                let keyType = self.environment.type(ofGroup: keyGroupName)
+                let valueType = self.environment.type(ofGroup: valueGroupName)
+                set(instr.output, .createJsMapType(ofKeyType: keyType, ofValueType: valueType))
+            } else {
+                set(instr.output, .jsMap)
             }
 
         default:

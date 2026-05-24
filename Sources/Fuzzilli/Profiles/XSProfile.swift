@@ -392,5 +392,7 @@ let xsProfile = Profile(
 
     additionalEnumerations: [],
 
+    additionalOptionsBags: [],
+
     optionalPostProcessor: nil
 )

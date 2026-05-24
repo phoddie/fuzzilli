@@ -1119,6 +1119,9 @@ extension Instruction: ProtobufConvertible {
                 $0.endForInLoop = Fuzzilli_Protobuf_EndForInLoop()
             case .beginForOfLoop:
                 $0.beginForOfLoop = Fuzzilli_Protobuf_BeginForOfLoop()
+            case .beginForAwaitOfLoop:
+                $0.beginForAwaitOfLoop = Fuzzilli_Protobuf_BeginForAwaitOfLoop()
+
             case .beginForOfLoopWithDestruct(let op):
                 $0.beginForOfLoopWithDestruct = Fuzzilli_Protobuf_BeginForOfLoopWithDestruct.with {
                     $0.indices = op.indices.map({ Int32($0) })
@@ -1226,6 +1229,13 @@ extension Instruction: ProtobufConvertible {
                 }
             case .print(_):
                 fatalError("Print operations should not be serialized")
+            case .createMap(let op):
+                $0.createMap = Fuzzilli_Protobuf_CreateMap.with {
+                    if let keyGroupName = op.keyGroupName, let valueGroupName = op.valueGroupName {
+                        $0.keyGroupName = keyGroupName
+                        $0.valueGroupName = valueGroupName
+                    }
+                }
             // Wasm Operations
             case .consti64(let op):
                 $0.consti64 = Fuzzilli_Protobuf_Consti64.with { $0.value = op.value }
@@ -1460,21 +1470,25 @@ extension Instruction: ProtobufConvertible {
                 $0.wasmAtomicLoad = Fuzzilli_Protobuf_WasmAtomicLoad.with {
                     $0.loadType = convertEnum(op.loadType, WasmAtomicLoadType.allCases)
                     $0.offset = op.offset
+                    $0.ordering = convertEnum(op.ordering, WasmMemoryOrdering.allCases)
                 }
             case .wasmAtomicStore(let op):
                 $0.wasmAtomicStore = Fuzzilli_Protobuf_WasmAtomicStore.with {
                     $0.storeType = convertEnum(op.storeType, WasmAtomicStoreType.allCases)
                     $0.offset = op.offset
+                    $0.ordering = convertEnum(op.ordering, WasmMemoryOrdering.allCases)
                 }
             case .wasmAtomicRMW(let op):
                 $0.wasmAtomicRmw = Fuzzilli_Protobuf_WasmAtomicRMW.with {
                     $0.op = convertEnum(op.op, WasmAtomicRMWType.allCases)
                     $0.offset = op.offset
+                    $0.ordering = convertEnum(op.ordering, WasmMemoryOrdering.allCases)
                 }
             case .wasmAtomicCmpxchg(let op):
                 $0.wasmAtomicCmpxchg = Fuzzilli_Protobuf_WasmAtomicCmpxchg.with {
                     $0.op = convertEnum(op.op, WasmAtomicCmpxchgType.allCases)
                     $0.offset = op.offset
+                    $0.ordering = convertEnum(op.ordering, WasmMemoryOrdering.allCases)
                 }
             case .wasmMemorySize(_):
                 $0.wasmMemorySize = Fuzzilli_Protobuf_WasmMemorySize()
@@ -1568,6 +1582,10 @@ extension Instruction: ProtobufConvertible {
                 $0.wasmBranchTable = Fuzzilli_Protobuf_WasmBranchTable.with {
                     $0.valueCount = UInt32(op.valueCount)
                 }
+            case .wasmBranchOnNull(_):
+                $0.wasmBranchOnNull = Fuzzilli_Protobuf_WasmBranchOnNull()
+            case .wasmBranchOnNonNull(_):
+                $0.wasmBranchOnNonNull = Fuzzilli_Protobuf_WasmBranchOnNonNull()
             case .wasmBeginIf(let op):
                 $0.wasmBeginIf = Fuzzilli_Protobuf_WasmBeginIf.with {
                     $0.parameterCount = Int32(op.parameterCount)
@@ -2397,6 +2415,8 @@ extension Instruction: ProtobufConvertible {
             op = EndForInLoop()
         case .beginForOfLoop:
             op = BeginForOfLoop()
+        case .beginForAwaitOfLoop:
+            op = BeginForAwaitOfLoop()
         case .beginForOfLoopWithDestruct(let p):
             op = BeginForOfLoopWithDestruct(
                 indices: p.indices.map({ Int64($0) }), hasRestElement: p.hasRestElement_p)
@@ -2483,6 +2503,16 @@ extension Instruction: ProtobufConvertible {
             op = BindFunction(numInputs: inouts.count - 1)
         case .print(_):
             fatalError("Should not deserialize a Print instruction!")
+        case .createMap(let p):
+            var keyGroupName: String? = nil
+            var valueGroupName: String? = nil
+            if p.hasKeyGroupName && p.hasValueGroupName {
+                keyGroupName = p.keyGroupName
+                valueGroupName = p.valueGroupName
+            }
+            op = CreateMap(
+                numInitialValues: inouts.count - 1, keyGroupName: keyGroupName,
+                valueGroupName: valueGroupName)
 
         // Wasm cases
         case .beginWasmModule(_):
@@ -2699,11 +2729,15 @@ extension Instruction: ProtobufConvertible {
             op = WasmBranch(parameterCount: inouts.count - 1)
         case .wasmBranchIf(let p):
             op = WasmBranchIf(
-                parameterCount: inouts.count - 2,
+                parameterCount: (inouts.count - 2) / 2,
                 hint: try convertEnum(p.hint, WasmBranchHint.allCases))
         case .wasmBranchTable(let p):
             op = WasmBranchTable(
                 parameterCount: inouts.count - Int(p.valueCount) - 2, valueCount: Int(p.valueCount))
+        case .wasmBranchOnNull(_):
+            op = WasmBranchOnNull(parameterCount: (inouts.count - 3) / 2)
+        case .wasmBranchOnNonNull(_):
+            op = WasmBranchOnNonNull(parameterCount: (inouts.count - 2) / 2)
         case .wasmBeginIf(let p):
             op = WasmBeginIf(
                 parameterCount: Int(p.parameterCount),
@@ -2841,18 +2875,28 @@ extension Instruction: ProtobufConvertible {
             op = WasmI31Get(isSigned: p.isSigned)
         case .wasmAtomicLoad(let p):
             op = WasmAtomicLoad(
-                loadType: try convertEnum(p.loadType, WasmAtomicLoadType.allCases), offset: p.offset
+                loadType: try convertEnum(p.loadType, WasmAtomicLoadType.allCases),
+                offset: p.offset,
+                ordering: try convertEnum(p.ordering, WasmMemoryOrdering.allCases)
             )
         case .wasmAtomicStore(let p):
             op = WasmAtomicStore(
                 storeType: try convertEnum(p.storeType, WasmAtomicStoreType.allCases),
-                offset: p.offset)
+                offset: p.offset,
+                ordering: try convertEnum(p.ordering, WasmMemoryOrdering.allCases)
+            )
         case .wasmAtomicRmw(let p):
             op = WasmAtomicRMW(
-                op: try convertEnum(p.op, WasmAtomicRMWType.allCases), offset: p.offset)
+                op: try convertEnum(p.op, WasmAtomicRMWType.allCases),
+                offset: p.offset,
+                ordering: try convertEnum(p.ordering, WasmMemoryOrdering.allCases)
+            )
         case .wasmAtomicCmpxchg(let p):
             op = WasmAtomicCmpxchg(
-                op: try convertEnum(p.op, WasmAtomicCmpxchgType.allCases), offset: p.offset)
+                op: try convertEnum(p.op, WasmAtomicCmpxchgType.allCases),
+                offset: p.offset,
+                ordering: try convertEnum(p.ordering, WasmMemoryOrdering.allCases)
+            )
         case .wasmAnyConvertExtern(_):
             op = WasmAnyConvertExtern()
         case .wasmExternConvertAny(_):

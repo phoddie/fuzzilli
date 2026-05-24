@@ -369,6 +369,10 @@ message Instruction {
         ImportVariables importVariables = 343;
         BeginBundleModuleEntryPoint beginBundleModuleEntryPoint = 344;
         EndBundleModuleEntryPoint endBundleModuleEntryPoint = 345;
+        WasmBranchOnNull wasmBranchOnNull = 346;
+        WasmBranchOnNonNull wasmBranchOnNonNull = 347;
+        CreateMap createMap = 348;
+        BeginForAwaitOfLoop beginForAwaitOfLoop = 349;
     }
 }
 
@@ -378,4 +382,5 @@ message Program {
     map<sint32, string> comments = 3;
     Program parent = 4;
     bool isBundle = 5;
+    uint32 version = 6;
 }
