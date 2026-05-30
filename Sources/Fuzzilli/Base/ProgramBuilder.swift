@@ -2295,16 +2295,17 @@ public class ProgramBuilder {
     /// Internally, this uses the ValueGenerators to generate some code. As such, the "shape"
     /// of prefix code is controlled in the same way as other generated code through the
     /// generator's respective weights.
-    public func buildPrefix() {
+    public func buildPrefix(n: Int? = nil) {
         if contextAnalyzer.context == .bundle {
             // Don't emit a prefix into the bundle context. The items inside the bundle will emit their own prefixes.
             return
         }
 
+        let numValuesToBuild = n ?? Int.random(in: 10...15)
+
         // Each value generators should generate at least 3 variables, and we probably want to run at least a
         // few of them (maybe roughly >= 3), so the number of variables to build shouldn't be set too low.
         assert(GeneratorStub.numberOfValuesToGenerateByValueGenerators == 3)
-        let numValuesToBuild = Int.random(in: 10...15)
 
         trace("Start of prefix code")
         buildValues(numValuesToBuild)
@@ -3534,6 +3535,23 @@ public class ProgramBuilder {
     }
 
     @discardableResult
+    public func buildWorkerFunction(
+        with descriptor: SubroutineDescriptor, named functionName: String? = nil,
+        defaultValues: [Variable] = [],
+        _ body: ([Variable]) -> Void
+    ) -> Variable {
+        assert(descriptor.parameters.numDefaultParameters == defaultValues.count)
+        setParameterTypesForNextSubroutine(descriptor.parameterTypes)
+        let instr = emit(
+            BeginWorkerFunction(
+                parameters: descriptor.parameters, functionName: functionName),
+            withInputs: defaultValues)
+        bodyWithRecursionGuard(instr.output) { body(Array(instr.innerOutputs)) }
+        emit(EndWorkerFunction())
+        return instr.output
+    }
+
+    @discardableResult
     public func buildArrowFunction(
         with descriptor: SubroutineDescriptor, defaultValues: [Variable] = [],
         _ body: ([Variable]) -> Void
@@ -4102,56 +4120,19 @@ public class ProgramBuilder {
         emit(EndForLoop())
     }
 
-    public func buildForInLoop(_ obj: Variable, _ body: (Variable, Variable) -> Void) {
-        let instr = emit(BeginForInLoop(), withInputs: [obj])
-        body(instr.innerOutput(0), instr.innerOutput(1))
-        emit(EndForInLoop())
-    }
-
-    public func buildForInLoop(_ obj: Variable, _ body: (Variable) -> Void) {
-        buildForInLoop(obj) { i, _ in body(i) }
-    }
-
-    public func buildForOfLoop(_ obj: Variable, _ body: (Variable, Variable) -> Void) {
-        let instr = emit(BeginForOfLoop(), withInputs: [obj])
-        body(instr.innerOutput(0), instr.innerOutput(1))
-        emit(EndForOfLoop())
-    }
-
-    public func buildForAwaitOfLoop(_ obj: Variable, _ body: (Variable, Variable) -> Void) {
-        let instr = emit(BeginForAwaitOfLoop(), withInputs: [obj])
-        body(instr.innerOutput(0), instr.innerOutput(1))
-        emit(EndForOfLoop())
-    }
-
-    public func buildForOfLoop(_ obj: Variable, _ body: (Variable) -> Void) {
-        buildForOfLoop(obj) { i, _ in body(i) }
-    }
-
-    public func buildForAwaitOfLoop(_ obj: Variable, _ body: (Variable) -> Void) {
-        buildForAwaitOfLoop(obj) { i, _ in body(i) }
-    }
-
-    public func buildForOfLoop(
-        _ obj: Variable, selecting indices: [Int64], hasRestElement: Bool = false,
+    public func buildForInOfLoop(
+        _ obj: Variable,
+        type: ForInOfLoopType,
+        isAsync: Bool,
+        header: LoopHeader,
         _ body: ([Variable], Variable) -> Void
     ) {
-        let instr = emit(
-            BeginForOfLoopWithDestruct(indices: indices, hasRestElement: hasRestElement),
-            withInputs: [obj])
+        let beginOp = ForLoop(type: type, isAsync: isAsync, header: header)
+        let instr = emit(beginOp, withInputs: [obj])
         let label = instr.innerOutputs.last!
         let vars = instr.innerOutputs.dropLast()
         body(Array(vars), label)
-        emit(EndForOfLoop())
-    }
-
-    public func buildForOfLoop(
-        _ obj: Variable, selecting indices: [Int64], hasRestElement: Bool = false,
-        _ body: ([Variable]) -> Void
-    ) {
-        buildForOfLoop(obj, selecting: indices, hasRestElement: hasRestElement) { vars, _ in
-            body(vars)
-        }
+        emit(EndForLoop())
     }
 
     public func buildRepeatLoop(n numIterations: Int, _ body: (Variable, Variable) -> Void) {
@@ -4277,6 +4258,12 @@ public class ProgramBuilder {
         }
     }
 
+    public func generateNamespaceImport() {
+        if let module = randomVariable(ofType: .jsModule()) {
+            importNamespace(module: module, isDeferred: probability(0.5))
+        }
+    }
+
     public func exportVariables(variables: [Variable], exportNames: [String]) {
         assert(variables.count == exportNames.count)
         emit(ExportVariables(exportNames: exportNames), withInputs: variables)
@@ -4284,6 +4271,11 @@ public class ProgramBuilder {
 
     public func importVariables(module: Variable, importNames: [String]) -> Instruction {
         return emit(ImportVariables(importNames: importNames), withInputs: [module])
+    }
+
+    @discardableResult
+    public func importNamespace(module: Variable, isDeferred: Bool) -> Instruction {
+        return emit(ImportNamespace(isDeferred: isDeferred), withInputs: [module])
     }
 
     public func blockBreak(_ label: Variable) {
@@ -4399,6 +4391,29 @@ public class ProgramBuilder {
                 Wasmi64BinOp(binOpKind: binOpKind), withInputs: [lhs, rhs],
                 types: [.wasmi64, .wasmi64]
             ).output
+        }
+
+        @discardableResult
+        public func wasmi64WideBinOp(
+            _ lo1: Variable, _ hi1: Variable, _ lo2: Variable, _ hi2: Variable,
+            op: WasmWideBinaryOpKind
+        ) -> [Variable] {
+            return Array(
+                b.emit(
+                    Wasmi64WideBinOp(binOpKind: op), withInputs: [lo1, hi1, lo2, hi2],
+                    types: [.wasmi64, .wasmi64, .wasmi64, .wasmi64]
+                ).outputs)
+        }
+
+        @discardableResult
+        public func wasmi64WideMulOp(
+            _ lhs: Variable, _ rhs: Variable, op: WasmWideMulOpKind
+        ) -> [Variable] {
+            return Array(
+                b.emit(
+                    Wasmi64WideMulOp(mulOpKind: op), withInputs: [lhs, rhs],
+                    types: [.wasmi64, .wasmi64]
+                ).outputs)
         }
 
         @discardableResult
@@ -5093,6 +5108,50 @@ public class ProgramBuilder {
             return Array(instr.outputs)
         }
 
+        @discardableResult
+        public func wasmBranchOnCast(
+            _ reference: Variable, targetRefType: ILType, to label: Variable, args: [Variable] = [],
+            typeDef: Variable? = nil
+        ) -> [Variable] {
+            let labelType = b.type(of: label)
+            let labelParams = labelType.wasmLabelType!.parameters
+            var inputs = [label] + args + [reference]
+            var types = [.anyWasmLabel] + labelParams.dropLast() + [.wasmGenericRef]
+            if let typeDef {
+                inputs.append(typeDef)
+                types.append(.wasmTypeDef())
+            }
+
+            let instr = b.emit(
+                WasmBranchOnCast(
+                    parameterCount: labelParams.count - 1, targetRefType: targetRefType),
+                withInputs: inputs,
+                types: types)
+            return Array(instr.outputs)
+        }
+
+        @discardableResult
+        public func wasmBranchOnCastFail(
+            _ reference: Variable, targetRefType: ILType, to label: Variable, args: [Variable] = [],
+            typeDef: Variable? = nil
+        ) -> [Variable] {
+            let labelType = b.type(of: label)
+            let labelParams = labelType.wasmLabelType!.parameters
+            var inputs = [label] + args + [reference]
+            var types = [.anyWasmLabel] + labelParams.dropLast() + [.wasmGenericRef]
+            if let typeDef {
+                inputs.append(typeDef)
+                types.append(.wasmTypeDef())
+            }
+
+            let instr = b.emit(
+                WasmBranchOnCastFail(
+                    parameterCount: labelParams.count - 1, targetRefType: targetRefType),
+                withInputs: inputs,
+                types: types)
+            return Array(instr.outputs)
+        }
+
         public func wasmBranchTable(on: Variable, labels: [Variable], args: [Variable]) {
             labels.forEach { checkArgumentsMatchLabelType(label: b.type(of: $0), args: args) }
             b.emit(
@@ -5498,6 +5557,45 @@ public class ProgramBuilder {
                 return result
             }
             fatalError("Could not find or generate wasm variable of type \(type)")
+        }
+
+        public func randomWasmReferenceType(withAbstractSuperType type: ILType) -> (
+            type: ILType, typeDef: Variable?
+        ) {
+            assert(type.wasmReferenceType?.isAbstract() == true)
+
+            let nullability = type.wasmReferenceType!.nullability
+            assert(nullability == true)
+            // TODO(bettscheider): Support generating non-nullable reference types.
+            // If the super type is nullable, the sub type may also be non-nullable.
+            // We already have some support for generating non-nullable values, but at this point it's
+            // not complete. So when we want to allow generating non-nullable reference types here, we
+            // need to make sure that values can be generated for them.
+
+            if probability(0.5) {
+                let typeDef = b.findVariable { v in
+                    let isAdHocSignature =
+                        (b.type(of: v).wasmTypeDefinition?.description
+                        as? WasmSignatureTypeDescription)?.isAdHoc == true
+                    let isTypeDefinition = b.type(of: v).Is(.wasmTypeDef())
+                    guard isTypeDefinition && !isAdHocSignature else {
+                        return false
+                    }
+                    let desc = b.type(of: v).wasmTypeDefinition!.description!
+                    let indexType = ILType.wasmIndexRef(desc, nullability: nullability)
+                    return type.subsumes(indexType)
+                }
+
+                if let typeDef {
+                    return (.wasmRef(.Index(), nullability: nullability), typeDef)
+                }
+            }
+
+            let candidates = WasmAbstractHeapType.allCases
+                .map { ILType.wasmRef($0, shared: false, nullability: nullability) }
+                .filter { type.subsumes($0) }
+
+            return (candidates.randomElement() ?? type, nil)
         }
 
         public func wasmUnreachable() {
@@ -6112,8 +6210,10 @@ public class ProgramBuilder {
     // workaround for flexible signature generation in non-typegroup contexts.)
     public func randomWasmTypeDef() -> Variable? {
         findVariable { v in
-            (type(of: v).wasmTypeDefinition?.description as? WasmSignatureTypeDescription)?.isAdHoc
-                == false
+            let isAdHocSignature =
+                (type(of: v).wasmTypeDefinition?.description as? WasmSignatureTypeDescription)?
+                .isAdHoc == true
+            return type(of: v).Is(.wasmTypeDef()) && !isAdHocSignature
         }
     }
 
@@ -6408,15 +6508,29 @@ public class ProgramBuilder {
                 .subroutine, .classDefinition, .objectLiteral, .wasm, .wasmFunction,
             ]
 
+            var newlyHiddenVariables = Set<Variable>()
+
             if !instr.op.contextOpened.intersection(hidingContexts).isEmpty {
                 let labelType = ILType.jsLoopLabel | .jsBlockLabel
+                newlyHiddenVariables.formUnion(
+                    visibleVariables.filter { v in
+                        type(of: v).Is(labelType) && !hiddenVariables.contains(v)
+                    })
+            }
 
-                let newlyHiddenVariables = visibleVariables.filter { v in
-                    type(of: v).Is(labelType) && !hiddenVariables.contains(v)
-                }
-                _ = newlyHiddenVariables.map(hide)
-                hiddenVariablesInScope.push(newlyHiddenVariables)
+            if instr.op.contextOpened.contains(.workerFunction) {
+                // Hide all visible variables except the function variable itself (which will be hidden later).
+                let outputs = Set(instr.outputs)
+                newlyHiddenVariables.formUnion(
+                    visibleVariables.filter {
+                        !hiddenVariables.contains($0) && !outputs.contains($0)
+                    })
+            }
 
+            let newlyHiddenArray = Array(newlyHiddenVariables)
+            if !newlyHiddenArray.isEmpty {
+                _ = newlyHiddenArray.map(hide)
+                hiddenVariablesInScope.push(newlyHiddenArray)
             } else {
                 hiddenVariablesInScope.push([Variable]())
             }

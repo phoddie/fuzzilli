@@ -186,7 +186,10 @@ public let codeGeneratorWeights = [
     "ForInLoopGenerator":                       10,
     "ForOfLoopGenerator":                       10,
     "ForAwaitOfLoopGenerator":                  10,
-    "ForOfWithDestructLoopGenerator":           3,
+    "ForOfWithArrayDestructLoopGenerator":      3,
+    "ForAwaitOfWithArrayDestructLoopGenerator": 3,
+    "ForOfWithObjectDestructLoopGenerator":      3,
+    "ForAwaitOfWithObjectDestructLoopGenerator": 3,
     "RepeatLoopGenerator":                      10,
     "SwitchCaseBreakGenerator":                 5,
     "LoopBreakGenerator":                       5,
@@ -245,6 +248,7 @@ public let codeGeneratorWeights = [
     "BundleModuleGenerator":                    5,
     "BundleModuleEntryPointGenerator":          5,
     "ModuleImportGenerator":                    20,
+    "ModuleNamespaceImportGenerator":           10,
     "ModuleExportGenerator":                    20,
 
     //
@@ -306,6 +310,8 @@ public let codeGeneratorWeights = [
     "Wasmf64CompareOpGenerator":                5,
     "Wasmi32EqzGenerator":                      5,
     "Wasmi64EqzGenerator":                      5,
+    "Wasmi64WideBinOpGenerator":                5,
+    "Wasmi64WideMulOpGenerator":                5,
 
     // Numerical Conversion Generators
     "WasmWrapi64Toi32Generator":                5,
@@ -405,4 +411,6 @@ public let codeGeneratorWeights = [
     "WasmRefTestAbstractGenerator":             5,
     "WasmRefCastGenerator":                     5,
     "WasmRefCastAbstractGenerator":             5,
+    "WasmBranchOnCastGenerator":                5,
+    "WasmBranchOnCastFailGenerator":            5,
 ]

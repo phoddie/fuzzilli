@@ -418,6 +418,7 @@ public class FuzzILLifter: Lifter {
             w.emit("\(output()) <- TestIn \(input(0)), \(input(1))")
 
         case .beginPlainFunction(let op as BeginAnyFunction),
+            .beginWorkerFunction(let op as BeginAnyFunction),
             .beginArrowFunction(let op as BeginAnyFunction),
             .beginGeneratorFunction(let op as BeginAnyFunction),
             .beginAsyncFunction(let op as BeginAnyFunction),
@@ -429,6 +430,7 @@ public class FuzzILLifter: Lifter {
             w.increaseIndentionLevel()
 
         case .endPlainFunction(let op as EndAnyFunction),
+            .endWorkerFunction(let op as EndAnyFunction),
             .endArrowFunction(let op as EndAnyFunction),
             .endGeneratorFunction(let op as EndAnyFunction),
             .endAsyncFunction(let op as EndAnyFunction),
@@ -730,40 +732,29 @@ public class FuzzILLifter: Lifter {
             w.emit("BeginForLoopBody -> \(loopVariablesAndLabel)")
             w.increaseIndentionLevel()
 
+        case .beginForLoop(let op):
+            let outputs = instr.innerOutputs.dropLast().map(lift)
+            let label = lift(instr.innerOutputs.last!)
+            let line = "BeginForLoop type='\(op.type)' async='\(op.isAsync)'"
+
+            switch op.header {
+            case .simple:
+                let allOutputs = instr.innerOutputs.map(lift).joined(separator: ", ")
+                w.emit("\(line) \(input(0)) -> \(allOutputs)")
+            case .arrayDestruct(let indices, let hasRest):
+                let pattern =
+                    " -> [\(liftArrayDestructPattern(indices: indices, outputs: outputs, hasRestElement: hasRest))], \(label)"
+                w.emit("\(line) \(input(0))\(pattern)")
+            case .objectDestruct(let properties, let hasRest):
+                let pattern =
+                    " -> {\(liftObjectDestructPattern(properties: properties, outputs: outputs, hasRestElement: hasRest))}, \(label)"
+                w.emit("\(line) \(input(0))\(pattern)")
+            }
+            w.increaseIndentionLevel()
+
         case .endForLoop:
             w.decreaseIndentionLevel()
             w.emit("EndForLoop")
-
-        case .beginForInLoop:
-            let outputs = instr.innerOutputs.map(lift).joined(separator: ", ")
-            w.emit("BeginForInLoop \(input(0)) -> \(outputs)")
-            w.increaseIndentionLevel()
-
-        case .endForInLoop:
-            w.decreaseIndentionLevel()
-            w.emit("EndForInLoop")
-
-        case .beginForOfLoop:
-            let outputs = instr.innerOutputs.map(lift).joined(separator: ", ")
-            w.emit("BeginForOfLoop \(input(0)) -> \(outputs)")
-            w.increaseIndentionLevel()
-
-        case .beginForAwaitOfLoop:
-            let outputs = instr.innerOutputs.map(lift).joined(separator: ", ")
-            w.emit("BeginForAwaitOfLoop \(input(0)) -> \(outputs)")
-            w.increaseIndentionLevel()
-
-        case .beginForOfLoopWithDestruct(let op):
-            let outputs = instr.innerOutputs.dropLast().map(lift)
-            let label = lift(instr.innerOutputs.last!)
-            w.emit(
-                "BeginForOfLoopWithDestruct \(input(0)) -> [\(liftArrayDestructPattern(indices: op.indices, outputs: outputs, hasRestElement: op.hasRestElement))], \(label)"
-            )
-            w.increaseIndentionLevel()
-
-        case .endForOfLoop:
-            w.decreaseIndentionLevel()
-            w.emit("EndForOfLoop")
 
         case .beginRepeatLoop(let op):
             let outputs = instr.innerOutputs.map(lift).joined(separator: ", ")
@@ -866,6 +857,10 @@ public class FuzzILLifter: Lifter {
             let outputs = instr.outputs.map(lift).joined(separator: ", ")
             let names = op.importNames.joined(separator: ", ")
             w.emit("\(outputs) <- ImportVariables \(input(0)), [\(names)]")
+
+        case .importNamespace(let op):
+            let deferKeyword = op.isDeferred ? "defer " : ""
+            w.emit("\(output()) <- ImportNamespace \(deferKeyword)\(input(0))")
 
         case .loadNewTarget:
             w.emit("\(output()) <- LoadNewTarget")
@@ -1057,6 +1052,16 @@ public class FuzzILLifter: Lifter {
 
         case .wasmi64BinOp(let op):
             w.emit("\(output()) <- Wasmi64BinOp \(input(0)) \(op.binOpKind) \(input(1))")
+
+        case .wasmi64WideBinOp(let op):
+            let outputs = instr.outputs.map(lift).joined(separator: ", ")
+            let inputs = instr.inputs.map(lift).joined(separator: ", ")
+            w.emit("\(outputs) <- Wasmi64WideBinOp \(op.binOpKind) [\(inputs)]")
+
+        case .wasmi64WideMulOp(let op):
+            let outputs = instr.outputs.map(lift).joined(separator: ", ")
+            let inputs = instr.inputs.map(lift).joined(separator: ", ")
+            w.emit("\(outputs) <- Wasmi64WideMulOp \(op.mulOpKind) [\(inputs)]")
 
         case .wasmi32BinOp(let op):
             w.emit("\(output()) <- Wasmi32BinOp \(input(0)) \(op.binOpKind) \(input(1))")
@@ -1372,14 +1377,10 @@ public class FuzzILLifter: Lifter {
             let ref = instr.inputs.last!
             let label = instr.inputs.first!
             let args = instr.inputs.dropFirst().dropLast().map(lift).joined(separator: ", ")
-            if instr.outputs.isEmpty {
-                w.emit("WasmBranchOnNull \(ref) to \(label) [\(args)]")
-            } else {
-                let outputs = instr.outputs.map(lift).joined(separator: ", ")
-                w.emit(
-                    "\(outputs) <- WasmBranchOnNull \(ref) to \(label) [\(args)]"
-                )
-            }
+            let outputs = instr.outputs.map(lift).joined(separator: ", ")
+            w.emit(
+                "\(outputs) <- WasmBranchOnNull \(ref) to \(label) [\(args)]"
+            )
 
         case .wasmBranchOnNonNull(_):
             let ref = instr.inputs.last!
@@ -1393,6 +1394,36 @@ public class FuzzILLifter: Lifter {
                     "\(outputs) <- WasmBranchOnNonNull \(ref) to \(label) [\(args)]"
                 )
             }
+
+        case .wasmBranchOnCast(let op):
+            let typeDefCount = op.targetType.requiredInputCount()  // 0 or 1
+            let ref = instr.inputs.dropLast(typeDefCount).last!
+            let label = instr.inputs.first!
+            let args = instr.inputs.dropFirst().dropLast(1 + typeDefCount).map(lift).joined(
+                separator: ", ")
+            let typeInput =
+                typeDefCount > 0
+                ? " (IndexType: \(instr.inputs.last!))" : ""
+
+            let outputs = instr.outputs.map(lift).joined(separator: ", ")
+            w.emit(
+                "\(outputs) <- WasmBranchOnCast \(op.targetType) \(ref) to \(label) [\(args)]\(typeInput)"
+            )
+
+        case .wasmBranchOnCastFail(let op):
+            let typeDefCount = op.targetType.requiredInputCount()  // 0 or 1
+            let ref = instr.inputs.dropLast(typeDefCount).last!
+            let label = instr.inputs.first!
+            let args = instr.inputs.dropFirst().dropLast(1 + typeDefCount).map(lift).joined(
+                separator: ", ")
+            let typeInput =
+                typeDefCount > 0
+                ? " (IndexType: \(instr.inputs.last!))" : ""
+
+            let outputs = instr.outputs.map(lift).joined(separator: ", ")
+            w.emit(
+                "\(outputs) <- WasmBranchOnCastFail \(op.targetType) \(ref) to \(label) [\(args)]\(typeInput)"
+            )
 
         case .wasmBranchTable(let op):
             let table =

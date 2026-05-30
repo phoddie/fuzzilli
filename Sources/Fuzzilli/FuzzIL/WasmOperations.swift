@@ -257,6 +257,38 @@ final class Wasmi64BinOp: WasmOperation {
     }
 }
 
+public enum WasmWideBinaryOpKind: UInt8, CaseIterable {
+    case add128 = 19
+    case sub128 = 20
+}
+
+final class Wasmi64WideBinOp: WasmOperation {
+    override var opcode: Opcode { .wasmi64WideBinOp(self) }
+    let binOpKind: WasmWideBinaryOpKind
+
+    init(binOpKind: WasmWideBinaryOpKind) {
+        self.binOpKind = binOpKind
+        super.init(
+            numInputs: 4, numOutputs: 2, attributes: [.isMutable], requiredContext: [.wasmFunction])
+    }
+}
+
+public enum WasmWideMulOpKind: UInt8, CaseIterable {
+    case mul_wide_s = 21
+    case mul_wide_u = 22
+}
+
+final class Wasmi64WideMulOp: WasmOperation {
+    override var opcode: Opcode { .wasmi64WideMulOp(self) }
+    let mulOpKind: WasmWideMulOpKind
+
+    init(mulOpKind: WasmWideMulOpKind) {
+        self.mulOpKind = mulOpKind
+        super.init(
+            numInputs: 2, numOutputs: 2, attributes: [.isMutable], requiredContext: [.wasmFunction])
+    }
+}
+
 public enum WasmAtomicRMWType: UInt8, CaseIterable {
     case i32Add = 0x1e
     case i64Add = 0x1f
@@ -1594,6 +1626,40 @@ final class WasmBranchOnNull: WasmOperation {
     }
 
     var parameterCount: Int { numInputs - 2 }
+}
+
+final class WasmBranchOnCast: WasmOperation {
+    override var opcode: Opcode { .wasmBranchOnCast(self) }
+    let targetType: ILType
+
+    init(parameterCount: Int, targetRefType: ILType) {
+        self.targetType = targetRefType
+        // Inputs: label, args, ref, type definition
+        // Outputs: args, original ref
+        super.init(
+            numInputs: 1 + parameterCount + 1 + targetType.requiredInputCount(),
+            numOutputs: parameterCount + 1,
+            requiredContext: [.wasmFunction])
+    }
+
+    var parameterCount: Int { numInputs - 2 - targetType.requiredInputCount() }
+}
+
+final class WasmBranchOnCastFail: WasmOperation {
+    override var opcode: Opcode { .wasmBranchOnCastFail(self) }
+    let targetType: ILType
+
+    init(parameterCount: Int, targetRefType: ILType) {
+        self.targetType = targetRefType
+        // Inputs: label, args, ref, type definition
+        // Outputs: args, original ref
+        super.init(
+            numInputs: 1 + parameterCount + 1 + targetType.requiredInputCount(),
+            numOutputs: parameterCount + 1,
+            requiredContext: [.wasmFunction])
+    }
+
+    var parameterCount: Int { numInputs - 2 - targetType.requiredInputCount() }
 }
 
 final class WasmBranchOnNonNull: WasmOperation {

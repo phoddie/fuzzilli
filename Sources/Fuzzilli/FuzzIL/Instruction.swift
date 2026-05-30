@@ -855,6 +855,15 @@ extension Instruction: ProtobufConvertible {
                 }
             case .endPlainFunction:
                 $0.endPlainFunction = Fuzzilli_Protobuf_EndPlainFunction()
+            case .beginWorkerFunction(let op):
+                $0.beginWorkerFunction = Fuzzilli_Protobuf_BeginWorkerFunction.with {
+                    $0.parameters = convertParameters(op.parameters)
+                    if let name = op.functionName {
+                        $0.name = name
+                    }
+                }
+            case .endWorkerFunction:
+                $0.endWorkerFunction = Fuzzilli_Protobuf_EndWorkerFunction()
             case .beginArrowFunction(let op):
                 $0.beginArrowFunction = Fuzzilli_Protobuf_BeginArrowFunction.with {
                     $0.parameters = convertParameters(op.parameters)
@@ -1111,24 +1120,37 @@ extension Instruction: ProtobufConvertible {
                 $0.beginForLoopAfterthought = Fuzzilli_Protobuf_BeginForLoopAfterthought()
             case .beginForLoopBody:
                 $0.beginForLoopBody = Fuzzilli_Protobuf_BeginForLoopBody()
+            case .beginForLoop(let op):
+                $0.beginForLoop = Fuzzilli_Protobuf_BeginForLoop.with {
+                    $0.loopType =
+                        switch op.type {
+                        case .forIn:
+                            .forIn
+                        case .forOf:
+                            .forOf
+                        }
+                    $0.isAsync = op.isAsync
+                    $0.headerType =
+                        switch op.header {
+                        case .simple:
+                            .simple
+                        case .arrayDestruct:
+                            .arrayDestruct
+                        case .objectDestruct:
+                            .objectDestruct
+                        }
+                    if case .arrayDestruct(let indices, let hasRest) = op.header {
+                        $0.indices = indices.map({ Int32($0) })
+                        $0.hasRestElement_p = hasRest
+                    }
+                    if case .objectDestruct(let properties, let hasRest) = op.header {
+                        $0.properties = properties
+                        $0.hasRestElement_p = hasRest
+                    }
+                }
+
             case .endForLoop:
                 $0.endForLoop = Fuzzilli_Protobuf_EndForLoop()
-            case .beginForInLoop:
-                $0.beginForInLoop = Fuzzilli_Protobuf_BeginForInLoop()
-            case .endForInLoop:
-                $0.endForInLoop = Fuzzilli_Protobuf_EndForInLoop()
-            case .beginForOfLoop:
-                $0.beginForOfLoop = Fuzzilli_Protobuf_BeginForOfLoop()
-            case .beginForAwaitOfLoop:
-                $0.beginForAwaitOfLoop = Fuzzilli_Protobuf_BeginForAwaitOfLoop()
-
-            case .beginForOfLoopWithDestruct(let op):
-                $0.beginForOfLoopWithDestruct = Fuzzilli_Protobuf_BeginForOfLoopWithDestruct.with {
-                    $0.indices = op.indices.map({ Int32($0) })
-                    $0.hasRestElement_p = op.hasRestElement
-                }
-            case .endForOfLoop:
-                $0.endForOfLoop = Fuzzilli_Protobuf_EndForOfLoop()
             case .beginRepeatLoop(let op):
                 $0.beginRepeatLoop = Fuzzilli_Protobuf_BeginRepeatLoop.with {
                     $0.iterations = Int64(op.iterations)
@@ -1227,6 +1249,10 @@ extension Instruction: ProtobufConvertible {
                 $0.importVariables = Fuzzilli_Protobuf_ImportVariables.with {
                     $0.importNames = op.importNames
                 }
+            case .importNamespace(let op):
+                $0.importNamespace = Fuzzilli_Protobuf_ImportNamespace.with {
+                    $0.isDeferred = op.isDeferred
+                }
             case .print(_):
                 fatalError("Print operations should not be serialized")
             case .createMap(let op):
@@ -1304,6 +1330,14 @@ extension Instruction: ProtobufConvertible {
                 $0.wasmi32EqualZero = Fuzzilli_Protobuf_Wasmi32EqualZero()
             case .wasmi64EqualZero(_):
                 $0.wasmi64EqualZero = Fuzzilli_Protobuf_Wasmi64EqualZero()
+            case .wasmi64WideBinOp(let op):
+                $0.wasmi64WideBinOp = Fuzzilli_Protobuf_Wasmi64WideBinOp.with {
+                    $0.op = convertEnum(op.binOpKind, WasmWideBinaryOpKind.allCases)
+                }
+            case .wasmi64WideMulOp(let op):
+                $0.wasmi64WideMulOp = Fuzzilli_Protobuf_Wasmi64WideMulOp.with {
+                    $0.op = convertEnum(op.mulOpKind, WasmWideMulOpKind.allCases)
+                }
 
             // Numerical Conversion Operations
 
@@ -1584,6 +1618,14 @@ extension Instruction: ProtobufConvertible {
                 }
             case .wasmBranchOnNull(_):
                 $0.wasmBranchOnNull = Fuzzilli_Protobuf_WasmBranchOnNull()
+            case .wasmBranchOnCast(let op):
+                $0.wasmBranchOnCast = Fuzzilli_Protobuf_WasmBranchOnCast.with {
+                    $0.type = ILTypeToWasmTypeEnum(op.targetType)
+                }
+            case .wasmBranchOnCastFail(let op):
+                $0.wasmBranchOnCastFail = Fuzzilli_Protobuf_WasmBranchOnCastFail.with {
+                    $0.type = ILTypeToWasmTypeEnum(op.targetType)
+                }
             case .wasmBranchOnNonNull(_):
                 $0.wasmBranchOnNonNull = Fuzzilli_Protobuf_WasmBranchOnNonNull()
             case .wasmBeginIf(let op):
@@ -2226,6 +2268,12 @@ extension Instruction: ProtobufConvertible {
             op = BeginPlainFunction(parameters: parameters, functionName: functionName)
         case .endPlainFunction:
             op = EndPlainFunction()
+        case .beginWorkerFunction(let p):
+            let parameters = convertParameters(p.parameters)
+            let functionName = p.name.isEmpty ? nil : p.name
+            op = BeginWorkerFunction(parameters: parameters, functionName: functionName)
+        case .endWorkerFunction:
+            op = EndWorkerFunction()
         case .beginArrowFunction(let p):
             let parameters = convertParameters(p.parameters)
             op = BeginArrowFunction(parameters: parameters)
@@ -2407,21 +2455,35 @@ extension Instruction: ProtobufConvertible {
             op = BeginForLoopAfterthought(numLoopVariables: inouts.count - 1)
         case .beginForLoopBody:
             op = BeginForLoopBody(numLoopVariables: inouts.count - 1)
+        case .beginForLoop(let p):
+            let header: LoopHeader =
+                switch p.headerType {
+                case .simple:
+                    .simple
+                case .arrayDestruct:
+                    .arrayDestruct(
+                        indices: p.indices.map({ Int64($0) }),
+                        hasRestElement: p.hasRestElement_p)
+                case .objectDestruct:
+                    .objectDestruct(
+                        properties: p.properties,
+                        hasRestElement: p.hasRestElement_p)
+                default:
+                    .simple
+                }
+            let type: ForInOfLoopType =
+                switch p.loopType {
+                case .forIn:
+                    .forIn
+                case .forOf:
+                    .forOf
+                default:
+                    .forOf
+                }
+            op = ForLoop(type: type, isAsync: p.isAsync, header: header)
+
         case .endForLoop:
             op = EndForLoop()
-        case .beginForInLoop:
-            op = BeginForInLoop()
-        case .endForInLoop:
-            op = EndForInLoop()
-        case .beginForOfLoop:
-            op = BeginForOfLoop()
-        case .beginForAwaitOfLoop:
-            op = BeginForAwaitOfLoop()
-        case .beginForOfLoopWithDestruct(let p):
-            op = BeginForOfLoopWithDestruct(
-                indices: p.indices.map({ Int64($0) }), hasRestElement: p.hasRestElement_p)
-        case .endForOfLoop:
-            op = EndForOfLoop()
         case .beginRepeatLoop(let p):
             op = BeginRepeatLoop(
                 iterations: Int(p.iterations), exposesLoopCounter: p.exposesLoopCounter)
@@ -2467,6 +2529,8 @@ extension Instruction: ProtobufConvertible {
             op = ExportVariables(exportNames: p.exportNames)
         case .importVariables(let p):
             op = ImportVariables(importNames: p.importNames)
+        case .importNamespace(let p):
+            op = ImportNamespace(isDeferred: p.isDeferred)
         case .loadNewTarget:
             op = LoadNewTarget()
         case .nop:
@@ -2549,6 +2613,10 @@ extension Instruction: ProtobufConvertible {
             op = Wasmi32EqualZero()
         case .wasmi64EqualZero(_):
             op = Wasmi64EqualZero()
+        case .wasmi64WideBinOp(let p):
+            op = Wasmi64WideBinOp(binOpKind: try convertEnum(p.op, WasmWideBinaryOpKind.allCases))
+        case .wasmi64WideMulOp(let p):
+            op = Wasmi64WideMulOp(mulOpKind: try convertEnum(p.op, WasmWideMulOpKind.allCases))
         case .wasmi32BinOp(let p):
             op = Wasmi32BinOp(binOpKind: try convertEnum(p.op, WasmIntegerBinaryOpKind.allCases))
         case .wasmi64BinOp(let p):
@@ -2736,6 +2804,16 @@ extension Instruction: ProtobufConvertible {
                 parameterCount: inouts.count - Int(p.valueCount) - 2, valueCount: Int(p.valueCount))
         case .wasmBranchOnNull(_):
             op = WasmBranchOnNull(parameterCount: (inouts.count - 3) / 2)
+        case .wasmBranchOnCast(let p):
+            let type = WasmTypeEnumToILType(p.type)
+            op = WasmBranchOnCast(
+                parameterCount: (inouts.count - 3 - type.requiredInputCount()) / 2,
+                targetRefType: type)
+        case .wasmBranchOnCastFail(let p):
+            let type = WasmTypeEnumToILType(p.type)
+            op = WasmBranchOnCastFail(
+                parameterCount: (inouts.count - 3 - type.requiredInputCount()) / 2,
+                targetRefType: type)
         case .wasmBranchOnNonNull(_):
             op = WasmBranchOnNonNull(parameterCount: (inouts.count - 2) / 2)
         case .wasmBeginIf(let p):

@@ -1892,6 +1892,102 @@ public let WasmCodeGenerators: [CodeGenerator] = [
         }
     },
 
+    CodeGenerator(
+        "WasmBranchOnCastGenerator", inContext: .single(.wasmFunction)
+    ) { b in
+        let function = b.currentWasmModule.currentWasmFunction
+
+        let label = b.findVariable { label in
+            // Ensure that the variable is a label, has at least one parameter, and the last is a reference.
+            b.type(of: label).wasmLabelType?.parameters.last?.Is(.wasmGenericRef) == true
+        }
+
+        if let label {
+            let labelType = b.type(of: label).wasmLabelType!
+            let lastParamType = labelType.parameters.last!
+            assert(lastParamType.wasmReferenceType != nil, "This should never be a wasmGenericRef")
+            let sourceType = lastParamType.wasmReferenceType!.kind.topType()
+            let v = function.findOrGenerateWasmVar(ofType: sourceType)
+            let args = labelType.parameters.dropLast().map(function.findOrGenerateWasmVar)
+            let isIndexType = !lastParamType.wasmReferenceType!.isAbstract()
+            if isIndexType {
+                let typeDef = b.getWasmTypeDef(for: lastParamType)
+                let unlinkedLastParamType = ILType.wasmRef(
+                    .Index(), nullability: lastParamType.wasmReferenceType!.nullability)
+                function.wasmBranchOnCast(
+                    v, targetRefType: unlinkedLastParamType, to: label, args: args, typeDef: typeDef
+                )
+            } else {
+                function.wasmBranchOnCast(v, targetRefType: lastParamType, to: label, args: args)
+            }
+        } else {
+            let topType = ILType.wasmRefHierarchyTopTypes.randomElement()!
+            let (targetRefType, typeDef) = function.randomWasmReferenceType(
+                withAbstractSuperType: topType)
+            var blockOutputTypes = b.randomWasmBlockOutputTypes(upTo: 2) + [targetRefType]
+            let signatureDef = b.wasmDefineAdHocSignatureType(
+                signature: [] => blockOutputTypes,
+                indexTypes: typeDef != nil ? [typeDef!] : nil)
+
+            let signature = b.type(of: signatureDef).wasmFunctionSignatureDefSignature
+
+            function.wasmBuildBlockWithResults(with: signatureDef, args: []) {
+                blockLabel, _ in
+                let sourceVar = function.findOrGenerateWasmVar(ofType: topType)
+                let args = signature.outputTypes.map(function.findOrGenerateWasmVar)
+
+                function.wasmBranchOnCast(
+                    sourceVar, targetRefType: targetRefType, to: blockLabel, args: args.dropLast(),
+                    typeDef: typeDef)
+
+                return args
+            }
+        }
+    },
+
+    CodeGenerator(
+        "WasmBranchOnCastFailGenerator", inContext: .single(.wasmFunction)
+    ) { b in
+        let function = b.currentWasmModule.currentWasmFunction
+
+        let label = b.findVariable { label in
+            if let params = b.type(of: label).wasmLabelType?.parameters, let last = params.last {
+                return ILType.wasmRefHierarchyTopTypes.contains(last)
+            }
+            return false
+        }
+
+        if let label {
+            let labelType = b.type(of: label).wasmLabelType!
+            let lastParamType = labelType.parameters.last!
+
+            let sourceVar = function.findOrGenerateWasmVar(ofType: lastParamType)
+            let (targetRefType, typeDef) = function.randomWasmReferenceType(
+                withAbstractSuperType: lastParamType)
+
+            let args = labelType.parameters.dropLast().map(function.findOrGenerateWasmVar)
+            function.wasmBranchOnCastFail(
+                sourceVar, targetRefType: targetRefType, to: label, args: args, typeDef: typeDef)
+        } else {
+            let topType = ILType.wasmRefHierarchyTopTypes.randomElement()!
+            let blockParamTypes = b.randomWasmBlockOutputTypes(upTo: 2) + [topType]
+
+            function.wasmBuildBlockWithResults(with: [] => blockParamTypes, args: []) {
+                blockLabel, _ in
+                let sourceVar = function.findOrGenerateWasmVar(ofType: topType)
+                let (targetRefType, typeDef) = function.randomWasmReferenceType(
+                    withAbstractSuperType: topType)
+                let args = blockParamTypes.map(function.findOrGenerateWasmVar)
+
+                function.wasmBranchOnCastFail(
+                    sourceVar, targetRefType: targetRefType, to: blockLabel, args: args.dropLast(),
+                    typeDef: typeDef)
+
+                return args
+            }
+        }
+    },
+
     // TODO split this into a multi-part Generator.
     CodeGenerator(
         "WasmBranchTableGenerator", inContext: .single(.wasmFunction),
@@ -2223,6 +2319,26 @@ public let WasmCodeGenerators: [CodeGenerator] = [
         inputs: .required(.object(ofGroup: "WasmMemory"))
     ) { b, memory in
         b.callMethod("grow", on: memory, withArgs: [b.loadInt(Int64.random(in: 0...10))])
+    },
+
+    CodeGenerator(
+        "Wasmi64WideBinOpGenerator",
+        inContext: .single(.wasmFunction),
+        inputs: .required(.wasmi64, .wasmi64, .wasmi64, .wasmi64),
+        produces: [.wasmi64, .wasmi64]
+    ) { b, lo1, hi1, lo2, hi2 in
+        b.currentWasmModule.currentWasmFunction.wasmi64WideBinOp(
+            lo1, hi1, lo2, hi2, op: chooseUniform(from: WasmWideBinaryOpKind.allCases))
+    },
+
+    CodeGenerator(
+        "Wasmi64WideMulOpGenerator",
+        inContext: .single(.wasmFunction),
+        inputs: .required(.wasmi64, .wasmi64),
+        produces: [.wasmi64, .wasmi64]
+    ) { b, lhs, rhs in
+        b.currentWasmModule.currentWasmFunction.wasmi64WideMulOp(
+            lhs, rhs, op: chooseUniform(from: WasmWideMulOpKind.allCases))
     },
 ]
 

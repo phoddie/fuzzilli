@@ -106,6 +106,7 @@ public struct ILType: Hashable {
     public static let dynamicObjectGroupPrefixes = [
         "_fuzz_Object", "_fuzz_WasmModule", "_fuzz_WasmExports", "_fuzz_Class",
         "_fuzz_Constructor", "_fuzz_RawWasmExports", "_fuzz_RawWasmModule",
+        "_fuzz_Namespace",
     ]
 
     //
@@ -428,6 +429,10 @@ public struct ILType: Hashable {
     /// Wasm value types ignoring reference types.
     public static let wasmNonRefValueTypes: [ILType] = [
         .wasmi32, .wasmi64, .wasmf32, .wasmf64, .wasmSimd128,
+    ]
+
+    public static let wasmRefHierarchyTopTypes: [ILType] = [
+        .wasmAnyRef(), .wasmFuncRef(), .wasmExternRef(), .wasmExnRef(),
     ]
 
     public static let anyNonNullableIndexRef = wasmRef(.Index(), nullability: false)
@@ -1819,6 +1824,19 @@ public enum WasmAbstractHeapType: CaseIterable, Comparable {
         }
     }
 
+    func getTop() -> Self {
+        switch self {
+        case .WasmExtern, .WasmNoExtern:
+            return .WasmExtern
+        case .WasmFunc, .WasmNoFunc:
+            return .WasmFunc
+        case .WasmAny, .WasmEq, .WasmI31, .WasmStruct, .WasmArray, .WasmNone:
+            return .WasmAny
+        case .WasmExn, .WasmNoExn:
+            return .WasmExn
+        }
+    }
+
     func inSameHierarchy(_ other: Self) -> Bool {
         return getBottom() == other.getBottom()
     }
@@ -1945,6 +1963,16 @@ public class WasmReferenceType: WasmTypeExtension {
         // defining the wasm-gc type (and is kept alive by the JSTyper).
         case Index(UnownedWasmTypeDescription = UnownedWasmTypeDescription())
         case Abstract(HeapTypeInfo)
+
+        func topType() -> ILType {
+            switch self {
+            case .Abstract(let info):
+                return .wasmRef(info.heapType.getTop())
+            case .Index(let idx):
+                let desc = idx.get()!
+                return .wasmRef(desc.abstractHeapSupertype!.heapType.getTop())
+            }
+        }
 
         func union(_ other: Self) -> Self? {
             switch self {

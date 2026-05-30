@@ -165,6 +165,8 @@ extension Operation {
             return endOp is EndClassPrivateMethod
         case .beginPlainFunction:
             return endOp is EndPlainFunction
+        case .beginWorkerFunction:
+            return endOp is EndWorkerFunction
         case .beginArrowFunction:
             return endOp is EndArrowFunction
         case .beginGeneratorFunction:
@@ -202,14 +204,9 @@ extension Operation {
             return endOp is BeginForLoopAfterthought
         case .beginForLoopAfterthought:
             return endOp is BeginForLoopBody
-        case .beginForLoopBody:
+        case .beginForLoopBody,
+            .beginForLoop:
             return endOp is EndForLoop
-        case .beginForInLoop:
-            return endOp is EndForInLoop
-        case .beginForOfLoop,
-            .beginForAwaitOfLoop,
-            .beginForOfLoopWithDestruct:
-            return endOp is EndForOfLoop
         case .beginRepeatLoop:
             return endOp is EndRepeatLoop
         case .beginTry:

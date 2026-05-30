@@ -356,6 +356,15 @@ message BeginPlainFunction {
 message EndPlainFunction {
 }
 
+message BeginWorkerFunction {
+    Parameters parameters = 1;
+    // Can be missing, in which case the name is auto-assigned.
+    string name = 2;
+}
+
+message EndWorkerFunction {
+}
+
 message BeginArrowFunction {
     Parameters parameters = 1;
 }
@@ -742,21 +751,24 @@ message BeginForLoopBody {
 message EndForLoop {
 }
 
-message BeginForInLoop {
-}
+message BeginForLoop {
+    enum ForInOfLoopType {
+        FOR_OF = 0;
+        FOR_IN = 1;
+    }
+    enum HeaderType {
+        SIMPLE = 0;
+        ARRAY_DESTRUCT = 1;
+        OBJECT_DESTRUCT = 2;
+    }
 
-message EndForInLoop {
-}
+    ForInOfLoopType loopType = 1;
+    bool isAsync = 2;
+    HeaderType headerType = 3;
 
-message BeginForOfLoop {
-}
-
-message BeginForOfLoopWithDestruct {
-    repeated int32 indices = 1;
-    bool hasRestElement = 2;
-}
-
-message EndForOfLoop {
+    repeated int32 indices = 4;
+    repeated string properties = 5;
+    bool hasRestElement = 6;
 }
 
 message BeginRepeatLoop {
@@ -1225,6 +1237,24 @@ enum WasmCatchKind {
   ALL_REF = 3;
 }
 
+message Wasmi64WideBinOp {
+    WasmWideBinaryOperator op = 1;
+}
+
+enum WasmWideBinaryOperator {
+    WASM_ADD128 = 0;
+    WASM_SUB128 = 1;
+}
+
+message Wasmi64WideMulOp {
+    WasmWideMulOperator op = 1;
+}
+
+enum WasmWideMulOperator {
+    WASM_MUL_WIDE_S = 0;
+    WASM_MUL_WIDE_U = 1;
+}
+
 message WasmBeginTryTable {
   int32 parameterCount = 1;
   repeated WasmCatchKind catches = 2;
@@ -1538,6 +1568,14 @@ message WasmRefCast {
 message WasmBranchOnNull {
 }
 
+message WasmBranchOnCast {
+    WasmILType type = 1;
+}
+
+message WasmBranchOnCastFail {
+    WasmILType type = 1;
+}
+
 message WasmBranchOnNonNull {
 }
 
@@ -1737,6 +1775,10 @@ message ImportVariables {
     repeated string importNames = 1;
 }
 
+message ImportNamespace {
+    bool isDeferred = 1;
+}
+
 message BeginBundleModuleEntryPoint {
 }
 
@@ -1748,5 +1790,4 @@ message CreateMap {
     optional string valueGroupName = 2;
 }
 
-message BeginForAwaitOfLoop {
-}
+

@@ -394,6 +394,13 @@ public class OperationMutator: BaseInstructionMutator {
         case .wasmf64UnOp(_):
             newOp = Wasmf64UnOp(unOpKind: chooseUniform(from: WasmFloatUnaryOpKind.allCases))
 
+        case .wasmi64WideBinOp(let op):
+            let otherCases = WasmWideBinaryOpKind.allCases.filter { $0 != op.binOpKind }
+            newOp = Wasmi64WideBinOp(binOpKind: chooseUniform(from: otherCases))
+        case .wasmi64WideMulOp(let op):
+            let otherCases = WasmWideMulOpKind.allCases.filter { $0 != op.mulOpKind }
+            newOp = Wasmi64WideMulOp(mulOpKind: chooseUniform(from: otherCases))
+
         case .wasmTruncatef32Toi32(_):
             newOp = WasmTruncatef32Toi32(isSigned: probability(0.5))
         case .wasmTruncatef64Toi32(_):
@@ -632,6 +639,8 @@ public class OperationMutator: BaseInstructionMutator {
             names.append(exports.randomElement()!)
             newOp = ImportVariables(importNames: names)
             inouts.append(b.nextVariable())
+        case .importNamespace(let op):
+            newOp = ImportNamespace(isDeferred: !op.isDeferred)
         // Unexpected operations to make the switch fully exhaustive.
         case .nop(_),
             .loadUndefined(_),
@@ -681,7 +690,9 @@ public class OperationMutator: BaseInstructionMutator {
             .testInstanceOf(_),
             .testIn(_),
             .beginPlainFunction(_),
+            .beginWorkerFunction(_),
             .endPlainFunction(_),
+            .endWorkerFunction(_),
             .beginArrowFunction(_),
             .endArrowFunction(_),
             .beginGeneratorFunction(_),
@@ -725,12 +736,7 @@ public class OperationMutator: BaseInstructionMutator {
             .beginForLoopAfterthought(_),
             .beginForLoopBody(_),
             .endForLoop(_),
-            .beginForInLoop(_),
-            .endForInLoop(_),
-            .beginForOfLoop(_),
-            .beginForAwaitOfLoop(_),
-            .beginForOfLoopWithDestruct(_),
-            .endForOfLoop(_),
+            .beginForLoop(_),
             .beginRepeatLoop(_),
             .endRepeatLoop(_),
             .loopBreak(_),
@@ -827,6 +833,8 @@ public class OperationMutator: BaseInstructionMutator {
             .wasmBranch(_),
             .wasmBranchOnNull(_),
             .wasmBranchOnNonNull(_),
+            .wasmBranchOnCast(_),
+            .wasmBranchOnCastFail(_),
             .wasmBranchTable(_),
             .wasmBeginElse(_),
             .wasmEndIf(_),

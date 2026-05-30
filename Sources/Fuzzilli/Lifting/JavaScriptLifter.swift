@@ -870,7 +870,8 @@ public class JavaScriptLifter: Lifter {
                 let expr = BinaryExpression.new() + lhs + " in " + rhs
                 w.assign(expr, to: instr.output)
 
-            case .beginPlainFunction:
+            case .beginPlainFunction,
+                .beginWorkerFunction:
                 liftFunctionDefinitionBegin(
                     instr, keyword: "function", withInputs: inputs, using: &w)
 
@@ -937,6 +938,7 @@ public class JavaScriptLifter: Lifter {
                 }
 
             case .endPlainFunction(_),
+                .endWorkerFunction(_),
                 .endGeneratorFunction(_),
                 .endAsyncFunction(_),
                 .endAsyncGeneratorFunction:
@@ -1448,61 +1450,40 @@ public class JavaScriptLifter: Lifter {
                 w.declareAll(instr.innerOutputs.dropLast(), as: header.loopVariables)
                 w.enterNewBlock()
 
+            case .beginForLoop(let op):
+                let OBJ = input(0)
+                let labelVar = instr.innerOutputs.last!
+                let prefix = w.labelPrefix(for: labelVar)
+
+                let loopKeyword = op.isAsync ? "for await" : "for"
+
+                if op.isForIn {
+                    let LET = w.declarationKeyword(for: instr.innerOutput(0))
+                    let V = w.declare(instr.innerOutput(0))
+                    w.emit("\(prefix)\(loopKeyword) (\(LET) \(V) in \(OBJ)) {")
+                } else {
+                    switch op.header {
+                    case .simple:
+                        let LET = w.declarationKeyword(for: instr.innerOutput(0))
+                        let V = w.declare(instr.innerOutput(0))
+                        w.emit("\(prefix)\(loopKeyword) (\(LET) \(V) of \(OBJ)) {")
+                    case .arrayDestruct(let indices, let hasRest):
+                        let LET = w.varKeyword
+                        let outputs = w.declareAll(instr.innerOutputs.dropLast())
+                        let PATTERN = liftArrayDestructPattern(
+                            indices: indices, outputs: outputs, hasRestElement: hasRest)
+                        w.emit("\(prefix)\(loopKeyword) (\(LET) [\(PATTERN)] of \(OBJ)) {")
+                    case .objectDestruct(let properties, let hasRest):
+                        let LET = w.varKeyword
+                        let outputs = w.declareAll(instr.innerOutputs.dropLast())
+                        let PATTERN = liftObjectDestructPattern(
+                            properties: properties, outputs: outputs, hasRestElement: hasRest)
+                        w.emit("\(prefix)\(loopKeyword) (\(LET) {\(PATTERN)} of \(OBJ)) {")
+                    }
+                }
+                w.enterNewBlock()
+
             case .endForLoop:
-                w.leaveCurrentBlock()
-                w.emit("}")
-
-            case .beginForInLoop:
-                let LET = w.declarationKeyword(for: instr.innerOutput(0))
-                let V = w.declare(instr.innerOutput(0))
-                let OBJ = input(0)
-
-                let labelVar = instr.innerOutputs.last!
-                let prefix = w.labelPrefix(for: labelVar)
-
-                w.emit("\(prefix)for (\(LET) \(V) in \(OBJ)) {")
-                w.enterNewBlock()
-
-            case .endForInLoop:
-                w.leaveCurrentBlock()
-                w.emit("}")
-
-            case .beginForOfLoop:
-                let V = w.declare(instr.innerOutput(0))
-                let LET = w.declarationKeyword(for: instr.innerOutput(0))
-                let OBJ = input(0)
-
-                let labelVar = instr.innerOutputs.last!
-                let prefix = w.labelPrefix(for: labelVar)
-
-                w.emit("\(prefix)for (\(LET) \(V) of \(OBJ)) {")
-                w.enterNewBlock()
-
-            case .beginForAwaitOfLoop:
-                let V = w.declare(instr.innerOutput(0))
-                let LET = w.declarationKeyword(for: instr.innerOutput(0))
-                let OBJ = input(0)
-
-                let labelVar = instr.innerOutputs.last!
-                let prefix = w.labelPrefix(for: labelVar)
-
-                w.emit("\(prefix)for await (\(LET) \(V) of \(OBJ)) {")
-                w.enterNewBlock()
-
-            case .beginForOfLoopWithDestruct(let op):
-                let outputs = w.declareAll(instr.innerOutputs.dropLast())
-                let PATTERN = liftArrayDestructPattern(
-                    indices: op.indices, outputs: outputs, hasRestElement: op.hasRestElement)
-                let LET = w.varKeyword
-                let OBJ = input(0)
-
-                let labelVar = instr.innerOutputs.last!
-                let prefix = w.labelPrefix(for: labelVar)
-
-                w.emit("\(prefix)for (\(LET) [\(PATTERN)] of \(OBJ)) {")
-                w.enterNewBlock()
-
-            case .endForOfLoop:
                 w.leaveCurrentBlock()
                 w.emit("}")
 
@@ -1634,6 +1615,12 @@ public class JavaScriptLifter: Lifter {
                 let specsStr = importSpecs.joined(separator: ", ")
                 let moduleName = moduleNames[instr.input(0)]!
                 w.emit("import { \(specsStr) } from \"\(moduleName)\";")
+
+            case .importNamespace(let op):
+                let output = w.declare(instr.output)
+                let moduleName = moduleNames[instr.input(0)]!
+                let deferKeyword = op.isDeferred ? "defer " : ""
+                w.emit("import \(deferKeyword)* as \(output) from \"\(moduleName)\";")
 
             case .loadNewTarget:
                 w.assign(Identifier.new("new.target"), to: instr.output)
@@ -1863,6 +1850,8 @@ public class JavaScriptLifter: Lifter {
                 .wasmf64CompareOp(_),
                 .wasmi64BinOp(_),
                 .wasmi32BinOp(_),
+                .wasmi64WideBinOp(_),
+                .wasmi64WideMulOp(_),
                 .wasmi32UnOp(_),
                 .wasmi64UnOp(_),
                 .wasmf32UnOp(_),
@@ -1949,6 +1938,8 @@ public class JavaScriptLifter: Lifter {
                 .wasmBranchIf(_),
                 .wasmBranchOnNull(_),
                 .wasmBranchOnNonNull(_),
+                .wasmBranchOnCast(_),
+                .wasmBranchOnCastFail(_),
                 .wasmBranchTable(_),
                 .wasmBeginIf(_),
                 .wasmBeginElse(_),

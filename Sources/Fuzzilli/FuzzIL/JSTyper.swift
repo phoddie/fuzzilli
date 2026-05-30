@@ -785,6 +785,12 @@ public struct JSTyper: Analyzer {
                 .wasmTruncateSatf32Toi64(_),
                 .wasmTruncateSatf64Toi64(_):
                 setType(of: instr.output, to: .wasmi64)
+            case .wasmi64WideBinOp(_),
+                .wasmi64WideMulOp(_):
+                assert(instr.numOutputs == 2)
+                for output in instr.outputs {
+                    setType(of: output, to: .wasmi64)
+                }
             case .wasmf32BinOp(_),
                 .wasmf32UnOp(_),
                 .wasmConverti32Tof32(_),
@@ -1133,6 +1139,40 @@ public struct JSTyper: Analyzer {
                     of: instr.outputs.last!,
                     to: .wasmRef(wasmRefType.kind, nullability: false))
 
+            case .wasmBranchOnCast(let op):
+                let labelType = type(of: instr.input(0))
+                let parameterTypes = labelType.wasmLabelType!.parameters
+                assert(instr.outputs.count == parameterTypes.count)
+                for (output, parameterType) in zip(
+                    instr.outputs.dropLast(), parameterTypes.dropLast())
+                {
+                    setType(of: output, to: parameterType)
+                }
+                let refInputIndex = 1 + op.parameterCount
+                let actualSourceType = type(of: instr.input(refInputIndex)).wasmReferenceType!
+                let sourceTopType = actualSourceType.kind.topType()
+                setType(of: instr.outputs.last!, to: sourceTopType)
+
+            case .wasmBranchOnCastFail(let op):
+                let labelType = type(of: instr.input(0))
+                let parameterTypes = labelType.wasmLabelType!.parameters
+                assert(instr.outputs.count == parameterTypes.count)
+                for (output, parameterType) in zip(
+                    instr.outputs.dropLast(), parameterTypes.dropLast())
+                {
+                    setType(of: output, to: parameterType)
+                }
+
+                let targetType = op.targetType.wasmReferenceType!
+                if targetType.isAbstract() {
+                    setType(of: instr.outputs.last!, to: op.targetType)
+                } else {
+                    let typeDefInputIndex = 1 + op.parameterCount + 1
+                    setReferenceType(
+                        of: instr.outputs.last!, typeDef: instr.input(typeDefInputIndex),
+                        nullability: targetType.nullability)
+                }
+
             case .wasmBranchOnNonNull(_):
                 let labelType = type(of: instr.input(0))
                 let parameterTypes = labelType.wasmLabelType!.parameters
@@ -1374,7 +1414,8 @@ public struct JSTyper: Analyzer {
             break
         case .endBundleModuleEntryPoint(_):
             break
-        case .beginPlainFunction(let op):
+        case .beginPlainFunction(let op as BeginAnyFunction),
+            .beginWorkerFunction(let op as BeginAnyFunction):
             // Plain functions can also be used as constructors.
             // The return value type will only be known after fully processing the function definitions.
             set(
@@ -1518,10 +1559,7 @@ public struct JSTyper: Analyzer {
         case .endForLoop:
             state.endGroupOfConditionallyExecutingBlocks(typeChanges: &typeChanges)
         case .beginWhileLoopBody,
-            .beginForInLoop,
-            .beginForOfLoop,
-            .beginForAwaitOfLoop,
-            .beginForOfLoopWithDestruct,
+            .beginForLoop,
             .beginRepeatLoop,
             .beginCodeString:
             state.startGroupOfConditionallyExecutingBlocks()
@@ -1530,8 +1568,6 @@ public struct JSTyper: Analyzer {
             // Push a new state tracking the types inside the loop
             state.enterConditionallyExecutingBlock(typeChanges: &typeChanges)
         case .endWhileLoop,
-            .endForInLoop,
-            .endForOfLoop,
             .endRepeatLoop,
             .endCodeString:
             state.endGroupOfConditionallyExecutingBlocks(typeChanges: &typeChanges)
@@ -1542,6 +1578,7 @@ public struct JSTyper: Analyzer {
             .beginObjectLiteralSetter,
             .beginObjectLiteralComputedSetter,
             .beginPlainFunction,
+            .beginWorkerFunction,
             .beginArrowFunction,
             .beginGeneratorFunction,
             .beginAsyncFunction,
@@ -1565,6 +1602,7 @@ public struct JSTyper: Analyzer {
             .endObjectLiteralSetter,
             .endObjectLiteralComputedSetter,
             .endPlainFunction,
+            .endWorkerFunction,
             .endArrowFunction,
             .endGeneratorFunction,
             .endAsyncFunction,
@@ -2103,6 +2141,15 @@ public struct JSTyper: Analyzer {
                 set(output, exportedType)
             }
 
+        case .importNamespace(_):
+            let moduleType = type(ofInput: 0)
+            let groupName = "_fuzz_Namespace\(instr.index)"
+            let objectGroup = ObjectGroup(
+                name: groupName, instanceType: nil, properties: moduleType.exports, overloads: [:]
+            )
+            dynamicObjectGroupManager.finalizedObjectGroups.append(objectGroup)
+            set(instr.output, objectGroup.instanceType)
+
         case .ternaryOperation:
             let outputType = type(ofInput: 1) | type(ofInput: 2)
             set(instr.output, outputType)
@@ -2227,6 +2274,7 @@ public struct JSTyper: Analyzer {
             }
 
         case .beginPlainFunction(let op as BeginAnyFunction),
+            .beginWorkerFunction(let op as BeginAnyFunction),
             .beginArrowFunction(let op as BeginAnyFunction),
             .beginGeneratorFunction(let op as BeginAnyFunction),
             .beginAsyncFunction(let op as BeginAnyFunction),
@@ -2285,23 +2333,33 @@ public struct JSTyper: Analyzer {
         case .beginDoWhileLoopBody:
             set(instr.innerOutput, .jsLoopLabel)
 
-        case .beginForInLoop:
-            set(instr.innerOutput(0), .string)
-            set(instr.innerOutput(1), .jsLoopLabel)
+        case .beginForLoop(let op):
+            let outputs = Array(instr.innerOutputs.dropLast())
+            let label = instr.innerOutputs.last!
 
-        case .beginForOfLoop:
-            set(instr.innerOutput(0), .jsAnything)
-            set(instr.innerOutput(1), .jsLoopLabel)
-
-        case .beginForAwaitOfLoop:
-            set(instr.innerOutput(0), .jsAnything)
-            set(instr.innerOutput(1), .jsLoopLabel)
-
-        case .beginForOfLoopWithDestruct:
-            for v in instr.innerOutputs.dropLast() {
-                set(v, .jsAnything)
+            if op.isForIn {
+                set(outputs[0], .string)
+            } else {
+                switch op.header {
+                case .simple:
+                    set(outputs[0], .jsAnything)
+                case .arrayDestruct(_, let hasRest):
+                    for v in outputs {
+                        set(v, .jsAnything)
+                    }
+                    if hasRest {
+                        set(outputs.last!, .jsArray)
+                    }
+                case .objectDestruct(_, let hasRest):
+                    for v in outputs {
+                        set(v, .jsAnything)
+                    }
+                    if hasRest {
+                        set(outputs.last!, .object())
+                    }
+                }
             }
-            set(instr.innerOutputs.last!, .jsLoopLabel)
+            set(label, .jsLoopLabel)
 
         case .beginRepeatLoop(let op):
             if op.exposesLoopCounter {

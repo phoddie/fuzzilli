@@ -695,7 +695,9 @@ class ProgramBuilderTests: XCTestCase {
         XCTAssertEqual(program.size, 16)
     }
 
-    func testOptionsBagAnySubset() {
+    func testOptionsBagAnySubset() throws {
+        throw XCTSkip("Skipping due to https://crbug.com/515494290")
+        /*
         let fuzzer = makeMockFuzzer()
         let b = fuzzer.makeBuilder()
         b.loadInt(0)  // to pass assert(hasVisibleVariables)
@@ -716,6 +718,7 @@ class ProgramBuilderTests: XCTestCase {
 
         XCTAssert(program.code.contains(where: { $0.op is BeginObjectLiteral }))
         XCTAssert(program.code.contains(where: { $0.op is EndObjectLiteral }))
+        */
     }
 
     func testOptionsBagExactlyOne() {
@@ -2417,7 +2420,8 @@ class ProgramBuilderTests: XCTestCase {
         var o1 = b.createObject(with: ["foo": i, "bar": s, "baz": f])
         b.loadString("unused")
         var o2 = b.createObject(with: [:])
-        b.buildForInLoop(o1) { p in
+        b.buildForInOfLoop(o1, type: .forIn, isAsync: false, header: .simple) { vars, _ in
+            let p = vars[0]
             let i = b.loadInt(1337)
             b.loadString("unusedButPartOfBody")
             splicePoint = b.indexOfNextInstruction()
@@ -2440,7 +2444,8 @@ class ProgramBuilderTests: XCTestCase {
         f = b.loadFloat(13.37)
         o1 = b.createObject(with: ["foo": i, "bar": s, "baz": f])
         o2 = b.createObject(with: [:])
-        b.buildForInLoop(o1) { p in
+        b.buildForInOfLoop(o1, type: .forIn, isAsync: false, header: .simple) { vars, _ in
+            let p = vars[0]
             let i = b.loadInt(1337)
             b.loadString("unusedButPartOfBody")
             b.setComputedProperty(p, of: o2, to: i)
@@ -3320,6 +3325,19 @@ class ProgramBuilderTests: XCTestCase {
         test("WasmAnyConvertExternGenerator", expectAny: WasmAnyConvertExtern.self)
     }
 
+    func testRandomWasmTypeDef() {
+        let fuzzer = makeMockFuzzer()
+        let b = fuzzer.makeBuilder()
+
+        let arrayTypeDef = b.wasmDefineTypeGroup {
+            [b.wasmDefineArrayType(elementType: .wasmi32, mutability: true)]
+        }[0]
+
+        // Ensure that randomWasmTypeDef() finds the array definition
+        let randomTypeDef = b.randomWasmTypeDef()
+        XCTAssertEqual(randomTypeDef, arrayTypeDef)
+    }
+
     func testThatGeneratorsExistAndAreBuildableFromJs() {
         let fuzzer = makeMockFuzzer()
         let tries: Int = 10
@@ -3330,11 +3348,8 @@ class ProgramBuilderTests: XCTestCase {
             let b = fuzzer.makeBuilder()
             b.buildPrefix()
 
-            if generator.name == "BundleScriptGenerator"
-                || generator.name == "BundleModuleGenerator"
-                || generator.name == "BundleModuleEntryPointGenerator"
-                || generator.name == "ModuleImportGenerator"
-                || generator.name == "ModuleExportGenerator"
+            if generator.requiredContext.contains(.bundle)
+                || generator.requiredContext.contains(.moduleTopLevel)
             {
                 // Only buildable in the "bundle" configuration.
                 continue

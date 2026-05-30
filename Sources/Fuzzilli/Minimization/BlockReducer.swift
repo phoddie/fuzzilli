@@ -51,10 +51,7 @@ struct BlockReducer: Reducer {
             case .beginWhileLoopHeader,
                 .beginDoWhileLoopBody,
                 .beginForLoopInitializer,
-                .beginForInLoop,
-                .beginForOfLoop,
-                .beginForAwaitOfLoop,
-                .beginForOfLoopWithDestruct,
+                .beginForLoop,
                 .beginRepeatLoop:
                 reduceLoop(group, with: helper)
 
@@ -76,6 +73,7 @@ struct BlockReducer: Reducer {
                 reduceGenericBlockGroup(group, with: helper)
 
             case .beginPlainFunction,
+                .beginWorkerFunction,
                 .beginArrowFunction,
                 .beginGeneratorFunction,
                 .beginAsyncFunction,

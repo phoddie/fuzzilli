@@ -838,12 +838,14 @@ class JSTyperTests: XCTestCase {
                 }
                 break
             case 2:
-                b.buildForInLoop(obj) { loopVar in
+                b.buildForInOfLoop(obj, type: .forIn, isAsync: false, header: .simple) { vars, _ in
+                    let loopVar = vars[0]
                     XCTAssertEqual(b.type(of: loopVar), .string)
                     body()
                 }
             case 3:
-                b.buildForOfLoop(obj) { loopVar in
+                b.buildForInOfLoop(obj, type: .forOf, isAsync: false, header: .simple) { vars, _ in
+                    let loopVar = vars[0]
                     XCTAssertEqual(b.type(of: loopVar), .jsAnything)
                     body()
                 }
@@ -2424,5 +2426,30 @@ class JSTyperTests: XCTestCase {
         b.exportVariables(variables: [v, v], exportNames: ["foo", "foo"])
         let module = b.endBundleModule()
         XCTAssertEqual(b.type(of: module), .jsModule(exports: ["foo": .integer]))
+    }
+
+    func testImportNamespaceTyping() {
+        let config = Configuration(logLevel: .error, generateBundle: true)
+        let fuzzer = makeMockFuzzer(config: config)
+        let b = fuzzer.makeBuilder()
+
+        b.beginBundleModule(name: "myModule")
+        let v1 = b.loadInt(42)
+        let v2 = b.loadString("abc")
+        b.exportVariables(variables: [v1, v2], exportNames: ["foo", "bar"])
+        let module = b.endBundleModule()
+
+        b.beginBundleModuleEntryPoint()
+        let ns = b.importNamespace(module: module, isDeferred: true).output
+        XCTAssertEqual(
+            b.type(of: ns),
+            .object(ofGroup: "_fuzz_Namespace6", withProperties: ["foo", "bar"]))
+
+        let retrievedFoo = b.getProperty("foo", of: ns)
+        XCTAssertEqual(b.type(of: retrievedFoo), .integer)
+
+        let retrievedBar = b.getProperty("bar", of: ns)
+        XCTAssertEqual(b.type(of: retrievedBar), .jsString)
+        b.endBundleModuleEntryPoint()
     }
 }
