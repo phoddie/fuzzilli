@@ -144,6 +144,44 @@ private let CompartmentEvaluateGenerator = CodeGenerator(
     b.callMethod("evaluate", on: target, withArgs: [code])
 }
 
+private let TextDecoderGenerator = CodeGenerator("TextDecoderGenerator") { b in
+    let textDecoderConstructor = b.createNamedVariable(forBuiltin: "TextDecoder")
+
+    var args = [Variable]()
+    args.append(b.loadString("utf-8"))
+    if probability(0.5) {
+        var options = [String: Variable]()
+        options["fatal"] = b.loadBool(probability(0.5))
+        options["ignoreBOM"] = b.loadBool(probability(0.5))
+        args.append(b.createObject(with: options))
+    }
+    let textDecoder = b.construct(textDecoderConstructor, withArgs: args)
+
+    let Uint8Array = b.createNamedVariable(forBuiltin: "Uint8Array")
+    let buffer = b.construct(Uint8Array, withArgs: [b.loadInt(Int64.random(in: 1...32))])
+    if probability(0.5) {
+        var options = [String: Variable]()
+        options["stream"] = b.loadBool(probability(0.5))
+        b.callMethod("decode", on: textDecoder, withArgs: [buffer, b.createObject(with: options)])
+    } else {
+        b.callMethod("decode", on: textDecoder, withArgs: [buffer])
+    }
+}
+
+private let TextEncoderGenerator = CodeGenerator("TextEncoderGenerator") { b in
+    let textEncoderConstructor = b.createNamedVariable(forBuiltin: "TextEncoder")
+    let textEncoder = b.construct(textEncoderConstructor, withArgs: [])
+
+    let s = b.loadString(b.randomString())
+    if probability(0.5) {
+        let Uint8Array = b.createNamedVariable(forBuiltin: "Uint8Array")
+        let target = b.construct(Uint8Array, withArgs: [b.loadInt(Int64.random(in: 1...64))])
+        b.callMethod("encodeInto", on: textEncoder, withArgs: [s, target])
+    } else {
+        b.callMethod("encode", on: textEncoder, withArgs: [s])
+    }
+}
+
 // this template taken from V8Profile.swift (with light modifications for XS)
 private let RegExpFuzzer = ProgramTemplate("RegExpFuzzer") { b in
     // Taken from: https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:v8/test/fuzzer/regexp-builtins.cc;l=212;drc=a61b95c63b0b75c1cfe872d9c8cdf927c226046e
@@ -269,6 +307,34 @@ extension ILType {
         ILType.constructor([.opt(.string)] => .jsModuleSource)
         + .object(
             ofGroup: "ModuleSourceConstructor", withProperties: ["prototype"], withMethods: [])
+
+    public static let jsTextDecoder = ILType.object(
+        ofGroup: "TextDecoder", withProperties: ["encoding", "ignoreBOM", "fatal"],
+        withMethods: ["decode"])
+
+    public static let jsTextDecoderConstructor =
+        ILType.constructor([.opt(.string), .opt(.jsTextDecoderConstructorOptions)] => .jsTextDecoder)
+        + .object(
+            ofGroup: "TextDecoderConstructor", withProperties: ["prototype"], withMethods: [])
+
+    public static let jsTextEncoder = ILType.object(
+        ofGroup: "TextEncoder", withMethods: ["encode", "encodeInto"])
+
+    public static let jsTextEncoderConstructor =
+        ILType.constructor([.opt(.string)] => .jsTextEncoder)
+        + .object(
+            ofGroup: "TextEncoderConstructor", withProperties: ["prototype"], withMethods: [])
+
+    public static let jsTextEncoderEncodeIntoResult =
+        ILType.object(
+            ofGroup: "TextEncoderEncodeIntoResult",
+            withProperties: ["read", "written"], withMethods: [])
+
+    public static let jsTextDecodeOptions = ILType.object(
+        ofGroup: "TextDecodeOptions", withProperties: ["stream"], withMethods: [])
+
+    public static let jsTextDecoderConstructorOptions = ILType.object(
+        ofGroup: "TextDecoderConstructorOptions", withProperties: ["fatal", "ignoreBOM"], withMethods: [])
 }
 
 /// Object group modelling JavaScript compartments.
@@ -312,6 +378,80 @@ let jsModuleSourceConstructor = ObjectGroup(
     instanceType: .jsModuleSourceConstructor,
     properties: [
         "prototype": .object()
+    ],
+    methods: [:]
+)
+
+let jsTextDecodeOptions = ObjectGroup(
+    name: "TextDecodeOptions",
+    instanceType: .jsTextDecodeOptions,
+    properties: [
+        "stream": .boolean,
+    ],
+    methods: [:]
+)
+
+let jsTextDecoderConstructorOptions = ObjectGroup(
+    name: "TextDecoderConstructorOptions",
+    instanceType: .jsTextDecoderConstructorOptions,
+    properties: [
+        "fatal": .boolean,
+        "ignoreBOM": .boolean,
+    ],
+    methods: [:]
+)
+
+let jsTextDecoderInput: Parameter = .plain(
+    .jsArrayBuffer | .jsSharedArrayBuffer | .jsDataView | .jsUint8Array)
+let jsTextDecoderSignature = [jsTextDecoderInput, .opt(.jsTextDecodeOptions)] => .string
+
+let jsTextDecoders = ObjectGroup(
+    name: "TextDecoder",
+    instanceType: .jsTextDecoder,
+    properties: [
+        "encoding": .string,
+        "ignoreBOM": .boolean,
+        "fatal": .boolean,
+    ],
+    methods: [
+        "decode": jsTextDecoderSignature,
+    ]
+)
+
+let jsTextDecoderConstructor = ObjectGroup(
+    name: "TextDecoderConstructor",
+    instanceType: .jsTextDecoderConstructor,
+    properties: [
+        "prototype": jsTextDecoders.instanceType,
+    ],
+    methods: [:]
+)
+
+let jsTextEncoders = ObjectGroup(
+    name: "TextEncoder",
+    instanceType: .jsTextEncoder,
+    properties: [:],
+    methods: [
+        "encode": [.string] => .jsUint8Array,
+        "encodeInto": [.string, .plain(.jsUint8Array)] => .jsTextEncoderEncodeIntoResult,
+    ]
+)
+
+let jsTextEncoderConstructor = ObjectGroup(
+    name: "TextEncoderConstructor",
+    instanceType: .jsTextEncoderConstructor,
+    properties: [
+        "prototype": jsTextEncoders.instanceType,
+    ],
+    methods: [:]
+)
+
+let jsTextEncoderEncodeIntoResults = ObjectGroup(
+    name: "TextEncoderEncodeIntoResult",
+    instanceType: .jsTextEncoderEncodeIntoResult,
+    properties: [
+        "read": .integer,
+        "written": .integer,
     ],
     methods: [:]
 )
@@ -361,6 +501,8 @@ let xsProfile = Profile(
         (CompartmentEvaluateGenerator, 5),
         (UnicodeStringGenerator, 2),
         (ModuleSourceGenerator, 3),
+        (TextDecoderGenerator, 10),
+        (TextEncoderGenerator, 10),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
@@ -384,10 +526,17 @@ let xsProfile = Profile(
         "lockdown": .function([] => .undefined),
         "petrify": .function([.jsAnything] => .jsAnything),
         "mutabilities": .function([.object()] => .object()),
+
+        // TextDecoder, TextEncoder
+        "TextDecoder": .function(
+            [.opt(.string), .opt(.jsTextDecoderConstructorOptions)] => .jsTextDecoderConstructor),
+        "TextEncoder": .function([.opt(.string)] => .jsTextEncoderConstructor),
     ],
 
     additionalObjectGroups: [
         jsCompartments, jsCompartmentConstructor, jsModuleSources, jsModuleSourceConstructor,
+        jsTextDecoders, jsTextDecoderConstructor, jsTextEncoders, jsTextEncoderConstructor,
+        jsTextEncoderEncodeIntoResults, jsTextDecodeOptions, jsTextDecoderConstructorOptions,
     ],
 
     additionalEnumerations: [],
