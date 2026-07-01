@@ -44,6 +44,9 @@ public struct JSTyper: Analyzer {
     // Tracks the active function definitions and contains the instruction that started the function.
     private var activeFunctionDefinitions = Stack<Instruction>()
 
+    // Tracks the active pending bundle module (non-nil between BeginPendingBundleModule and EndPendingBundleModule).
+    private var activePendingBundleModule: Instruction? = nil
+
     /// This tracks program local object groups (WasmModules, JS Classes and Object literals).
     private var dynamicObjectGroupManager = ObjectGroupManager()
 
@@ -210,7 +213,8 @@ public struct JSTyper: Analyzer {
             // This type and the object group will be updated dynamically
             let instanceType: ILType = .object(
                 ofGroup: instanceName, withProperties: Array(superType.properties),
-                withMethods: Array(superType.methods))
+                withMethods: Array(superType.methods),
+                withSymbolMethods: Array(superType.symbolMethods))
 
             // This is the wip object group.
             let objectGroup = ObjectGroup(
@@ -398,6 +402,15 @@ public struct JSTyper: Analyzer {
             activeObjectGroups.top.methods[methodName] = []
         }
 
+        public func addSymbolMethod(_ symbol: String) {
+            let topGroup = activeObjectGroups.top
+            let newType =
+                ILType.object(ofGroup: topGroup.name, withSymbolMethods: [symbol])
+                + topGroup.instanceType
+            assert(newType != .nothing)
+            activeObjectGroups.top.instanceType = newType
+        }
+
         public func updateMethodSignature(methodName: String, signature: Signature) {
             assert(activeObjectGroups.top.instanceType.methods.contains(methodName))
             activeObjectGroups.top.methods[methodName]!.append(signature)
@@ -448,6 +461,7 @@ public struct JSTyper: Analyzer {
         isWithinTypeGroup = false
         dynamicObjectGroupManager = ObjectGroupManager()
         assert(activeFunctionDefinitions.isEmpty)
+        assert(activePendingBundleModule == nil)
         assert(dynamicObjectGroupManager.isEmpty)
         seenExports = []
     }
@@ -496,14 +510,26 @@ public struct JSTyper: Analyzer {
             fatalError("\(type) is not a Wasm type definition")
         }
 
-        guard let desc, let typeDef = wasmTypeDefMap[desc] else {
-            fatalError("missing type definition link for type \(type)")
+        if let desc, let typeDef = wasmTypeDefMap[desc] {
+            return typeDef
         }
-        return typeDef
+
+        if isWithinTypeGroup, let desc {
+            if let typeDef = typeGroups.last?.first(where: {
+                self.type(of: $0).wasmTypeDefinition?.description === desc
+            }) {
+                return typeDef
+            }
+        }
+
+        fatalError("missing type definition link for type \(type)")
     }
 
     mutating func addSignatureType(
-        def: Variable, signature: WasmSignature, inputs: ArraySlice<Variable>, isAdHoc: Bool = false
+        def: Variable, signature: WasmSignature, inputs: ArraySlice<Variable>,
+        isAdHoc: Bool = false,
+        concreteHeapSupertype: WasmTypeDescription? = nil,
+        isFinal: Bool = false
     ) {
         assert(isWithinTypeGroup)
         var inputs = inputs.makeIterator()
@@ -555,18 +581,27 @@ public struct JSTyper: Analyzer {
         let resolvedParameterTypes = signature.parameterTypes.enumerated().map(resolveType)
         isParameter = false  // TODO(mliedtke): Is there a nicer way to capture this?
         let resolvedOutputTypes = signature.outputTypes.enumerated().map(resolveType)
+
+        if let concreteHeapSupertype {
+            registerTypeGroupDependency(from: tgIndex, to: concreteHeapSupertype.typeGroupIndex)
+        }
+
         set(
             def,
             .wasmTypeDef(
                 description: WasmSignatureTypeDescription(
                     signature: resolvedParameterTypes => resolvedOutputTypes,
                     typeGroupIndex: tgIndex,
-                    isAdHoc: isAdHoc)))
+                    isAdHoc: isAdHoc,
+                    concreteHeapSupertype: concreteHeapSupertype,
+                    isFinal: isFinal)))
         typeGroups[typeGroups.count - 1].append(def)
     }
 
     mutating func addArrayType(
-        def: Variable, elementType: ILType, mutability: Bool, elementRef: Variable? = nil
+        def: Variable, elementType: ILType, mutability: Bool, elementRef: Variable? = nil,
+        concreteHeapSupertype: WasmTypeDescription? = nil,
+        isFinal: Bool = false
     ) {
         assert(isWithinTypeGroup)
         let tgIndex = typeGroups.count - 1
@@ -606,18 +641,27 @@ public struct JSTyper: Analyzer {
         } else {
             resolvedElementType = elementType
         }
+
+        if let concreteHeapSupertype {
+            registerTypeGroupDependency(from: tgIndex, to: concreteHeapSupertype.typeGroupIndex)
+        }
+
         set(
             def,
             .wasmTypeDef(
                 description: WasmArrayTypeDescription(
                     elementType: resolvedElementType,
                     mutability: mutability,
-                    typeGroupIndex: tgIndex)))
+                    typeGroupIndex: tgIndex,
+                    concreteHeapSupertype: concreteHeapSupertype,
+                    isFinal: isFinal)))
         typeGroups[typeGroups.count - 1].append(def)
     }
 
     mutating func addStructType(
-        def: Variable, fieldsWithRefs: [(WasmStructTypeDescription.Field, Variable?)]
+        def: Variable, fieldsWithRefs: [(WasmStructTypeDescription.Field, Variable?)],
+        concreteHeapSupertype: WasmTypeDescription? = nil,
+        isFinal: Bool = false
     ) {
         let tgIndex = typeGroups.count - 1
         let resolvedFields = fieldsWithRefs.enumerated().map { (fieldIndex, fieldWithInput) in
@@ -653,11 +697,19 @@ public struct JSTyper: Analyzer {
             }
         }
 
+        if let concreteHeapSupertype {
+            registerTypeGroupDependency(from: tgIndex, to: concreteHeapSupertype.typeGroupIndex)
+        }
+
         set(
             def,
             .wasmTypeDef(
                 description: WasmStructTypeDescription(
-                    fields: resolvedFields, typeGroupIndex: tgIndex)))
+                    fields: resolvedFields,
+                    typeGroupIndex: tgIndex,
+                    concreteHeapSupertype: concreteHeapSupertype,
+                    isFinal: isFinal)))
+
         typeGroups[typeGroups.count - 1].append(def)
     }
 
@@ -906,13 +958,13 @@ public struct JSTyper: Analyzer {
                 dynamicObjectGroupManager.addWasmGlobal(
                     withType: type(of: instr.input(0)), forDefinition: definingInstruction,
                     forVariable: instr.input(0))
-            case .wasmTableGet(_):
+            case .wasmTableGet(let op):
                 let definingInstruction = defUseAnalyzer.definition(of: instr.input(0))
                 let tableType = type(of: instr.input(0))
                 dynamicObjectGroupManager.addWasmTable(
                     withType: tableType, forDefinition: definingInstruction,
                     forVariable: instr.input(0))
-                setType(of: instr.output, to: tableType.wasmTableType!.elementType)
+                setType(of: instr.output, to: op.elementType)
             case .wasmTableSet(_):
                 let definingInstruction = defUseAnalyzer.definition(of: instr.input(0))
                 dynamicObjectGroupManager.addWasmTable(
@@ -1070,6 +1122,13 @@ public struct JSTyper: Analyzer {
                 for (output, outputType) in zip(instr.outputs, signature.outputTypes) {
                     setType(of: output, to: outputType)
                 }
+            case .wasmCallRef(_):
+                let functionRef = instr.inputs.last!
+                let typeDesc = getTypeDescription(of: functionRef) as! WasmSignatureTypeDescription
+                let signature = typeDesc.signature
+                for (output, outputType) in zip(instr.outputs, signature.outputTypes) {
+                    setType(of: output, to: outputType)
+                }
             // Functions that can be called through a table are also already added by the wasmDefineTable instruction.
             // No need to analyze this and add them to the DynamicObjectGroupManager.
             case .wasmArrayNewFixed(_),
@@ -1098,6 +1157,21 @@ public struct JSTyper: Analyzer {
                 }
             case .wasmRefIsNull(_):
                 setType(of: instr.output, to: .wasmi32)
+            case .wasmRefAsNonNull(_):
+                // The result type is the non-nullable variant of the input type. (If the input type
+                // is already non-nullable, the instruction doesn't do anything and the type does
+                // not change.)
+                let inputRefType = type(of: instr.input(0)).wasmReferenceType!
+                setType(of: instr.output, to: .wasmRef(inputRefType.kind, nullability: false))
+            case .wasmRefFunc(_):
+                if let signatureType = type(of: instr.input(0)).wasmFunctionDef?.signatureType,
+                    let refType = signatureType.wasmTypeDefinition?.getReferenceTypeTo(
+                        nullability: false)
+                {
+                    setType(of: instr.output, to: refType)
+                } else {
+                    fatalError("Function passed to ref.func lacks a concrete signature definition")
+                }
             case .wasmRefEq(_):
                 setType(of: instr.output, to: .wasmi32)
             case .wasmRefI31(let op):
@@ -1228,9 +1302,21 @@ public struct JSTyper: Analyzer {
         case .endWasmModule(_):
             let instanceType = dynamicObjectGroupManager.finalizeWasmModule()
             setType(of: instr.output, to: instanceType)
+        case .beginBundleModule(_):
+            assert(seenExports.isEmpty)
         case .endBundleModule(_):
             let instanceType = finalizeJsModule()
             setType(of: instr.output, to: instanceType)
+        case .beginPendingBundleModule(_):
+            assert(activePendingBundleModule == nil)
+            activePendingBundleModule = instr
+        case .endPendingBundleModule(_):
+            let moduleVariable = activePendingBundleModule!.inputs[0]
+            let instanceType = finalizeJsModule()
+            setType(of: moduleVariable, to: instanceType)
+            activePendingBundleModule = nil
+        case .beginBundleModuleEntryPoint(_):
+            assert(seenExports.isEmpty)
         case .endBundleModuleEntryPoint(_):
             seenExports = []
         case .exportVariables(let op):
@@ -1508,7 +1594,9 @@ public struct JSTyper: Analyzer {
             .beginBundleModule,
             .endBundleModule,
             .beginBundleModuleEntryPoint,
-            .endBundleModuleEntryPoint:
+            .endBundleModuleEntryPoint,
+            .beginPendingBundleModule,
+            .endPendingBundleModule:
             // Object literals and class definitions don't create any conditional branches, only methods and accessors inside of them. These are handled further below.
             break
         case .beginIf:
@@ -1900,6 +1988,11 @@ public struct JSTyper: Analyzer {
                 instr.innerOutputs(1...),
                 parameters: inferSubroutineParameterList(of: op, at: instr.index))
 
+            let keyType = type(ofInput: 0)
+            if let symbolGroup = keyType.group, ILType.groupsMatchByPrefix("Symbol", symbolGroup) {
+                dynamicObjectGroupManager.addSymbolMethod(symbolGroup)
+            }
+
         case .beginObjectLiteralGetter(let op):
             // The first inner output is the explicit |this| parameter for the constructor
             set(instr.innerOutput(0), dynamicObjectGroupManager.top.instanceType)
@@ -1985,6 +2078,14 @@ public struct JSTyper: Analyzer {
                 instr.innerOutputs(1...),
                 parameters: inferSubroutineParameterList(of: op, at: instr.index))
 
+            let keyType = type(ofInput: 0)
+            if let symbolGroup = keyType.group, ILType.groupsMatchByPrefix("Symbol", symbolGroup) {
+                // TODO: We do not support static symbol methods yet.
+                if !op.isStatic {
+                    dynamicObjectGroupManager.addSymbolMethod(symbolGroup)
+                }
+            }
+
         case .beginClassGetter(let op):
             // The first inner output is the explicit |this| parameter for the constructor
             if op.isStatic {
@@ -2066,7 +2167,7 @@ public struct JSTyper: Analyzer {
             set(instr.output, .jsString)
 
         case .rawWasmModule(let op):
-            let groupName = "_fuzz_RawWasmExports_\(instr.index)"
+            let groupName = "_fuzz_RawWasmExports\(instr.index)"
 
             var properties = [String: ILType]()
             var methods = [String: [Signature]]()
@@ -2091,7 +2192,7 @@ public struct JSTyper: Analyzer {
 
             let exportsType = exportsGroup.instanceType
 
-            let moduleGroupName = "_fuzz_RawWasmModule_\(instr.index)"
+            let moduleGroupName = "_fuzz_RawWasmModule\(instr.index)"
             let moduleGroup = ObjectGroup(
                 name: moduleGroupName, instanceType: nil, properties: ["exports": exportsType],
                 overloads: [:])
@@ -2149,6 +2250,9 @@ public struct JSTyper: Analyzer {
             )
             dynamicObjectGroupManager.finalizedObjectGroups.append(objectGroup)
             set(instr.output, objectGroup.instanceType)
+
+        case .dynamicImport(_):
+            set(instr.output, .jsPromise)
 
         case .ternaryOperation:
             let outputType = type(ofInput: 1) | type(ofInput: 2)
@@ -2228,29 +2332,25 @@ public struct JSTyper: Analyzer {
                 state.updateReturnValueType(to: .undefined)
             }
 
-        case .destructArray:
-            instr.outputs.forEach { set($0, .jsAnything) }
+        case .destruct(let op):
+            var outputIterator = instr.outputs.makeIterator()
+            processDestructuring(
+                op.pattern,
+                on: instr.input(0),
+                isRoot: true,
+                iterator: &outputIterator,
+                isReassignment: false
+            )
 
-        case .destructArrayAndReassign:
-            instr.inputs.dropFirst().forEach { set($0, .jsAnything) }
-
-        case .destructObject(let op):
-            for (property, output) in zip(op.properties, instr.outputs) {
-                set(output, inferPropertyType(of: property, on: instr.input(0)))
-            }
-            if op.hasRestElement {
-                // TODO: Add the subset of object properties and methods captured by the rest element
-                set(instr.outputs.last!, .object())
-            }
-
-        case .destructObjectAndReassign(let op):
-            for (property, input) in zip(op.properties, instr.inputs.dropFirst()) {
-                set(input, inferPropertyType(of: property, on: instr.input(0)))
-            }
-            if op.hasRestElement {
-                // TODO: Add the subset of object properties and methods captured by the rest element
-                set(instr.inputs.last!, .object())
-            }
+        case .destructAndReassign(let op):
+            var inputIterator = instr.inputs.dropFirst().makeIterator()  // skip the source object
+            processDestructuring(
+                op.pattern,
+                on: instr.input(0),
+                isRoot: true,
+                iterator: &inputIterator,
+                isReassignment: true
+            )
 
         case .compare:
             set(instr.output, .boolean)
@@ -2343,20 +2443,15 @@ public struct JSTyper: Analyzer {
                 switch op.header {
                 case .simple:
                     set(outputs[0], .jsAnything)
-                case .arrayDestruct(_, let hasRest):
-                    for v in outputs {
-                        set(v, .jsAnything)
-                    }
-                    if hasRest {
-                        set(outputs.last!, .jsArray)
-                    }
-                case .objectDestruct(_, let hasRest):
-                    for v in outputs {
-                        set(v, .jsAnything)
-                    }
-                    if hasRest {
-                        set(outputs.last!, .object())
-                    }
+                case .destruct(let pattern):
+                    var outputIterator = outputs.makeIterator()
+                    processDestructuring(
+                        pattern,
+                        on: nil,
+                        isRoot: true,
+                        iterator: &outputIterator,
+                        isReassignment: false
+                    )
                 }
             }
             set(label, .jsLoopLabel)
@@ -2462,16 +2557,27 @@ public struct JSTyper: Analyzer {
             }
 
         case .wasmDefineSignatureType(let op):
-            addSignatureType(def: instr.output, signature: op.signature, inputs: instr.inputs)
+            let concreteHeapSupertype =
+                op.hasSuperType ? getTypeDescription(of: instr.inputs.first!) : nil
+            let sigInputs = op.hasSuperType ? instr.inputs.dropFirst() : instr.inputs
+            addSignatureType(
+                def: instr.output, signature: op.signature, inputs: sigInputs,
+                concreteHeapSupertype: concreteHeapSupertype,
+                isFinal: op.isFinal)
 
         case .wasmDefineArrayType(let op):
-            let elementRef = op.elementType.requiredInputCount() == 1 ? instr.input(0) : nil
+            let elementRef = op.elementType.requiredInputCount() == 1 ? instr.inputs.last! : nil
+            let concreteHeapSupertype =
+                op.hasSuperType ? getTypeDescription(of: instr.inputs.first!) : nil
             addArrayType(
                 def: instr.output, elementType: op.elementType, mutability: op.mutability,
-                elementRef: elementRef)
+                elementRef: elementRef, concreteHeapSupertype: concreteHeapSupertype,
+                isFinal: op.isFinal)
 
         case .wasmDefineStructType(let op):
-            var inputIndex = 0
+            let concreteHeapSupertype =
+                op.hasSuperType ? getTypeDescription(of: instr.inputs.first!) : nil
+            var inputIndex = op.hasSuperType ? 1 : 0
             let fieldsWithRefs: [(WasmStructTypeDescription.Field, Variable?)] = op.fields.map {
                 field in
                 if field.type.requiredInputCount() == 0 {
@@ -2483,7 +2589,10 @@ public struct JSTyper: Analyzer {
                 }
             }
             assert(inputIndex == instr.inputs.count)
-            addStructType(def: instr.output, fieldsWithRefs: fieldsWithRefs)
+            addStructType(
+                def: instr.output, fieldsWithRefs: fieldsWithRefs,
+                concreteHeapSupertype: concreteHeapSupertype,
+                isFinal: op.isFinal)
 
         case .wasmDefineForwardOrSelfReference(_):
             set(instr.output, .wasmSelfReference())
@@ -2508,6 +2617,13 @@ public struct JSTyper: Analyzer {
             } else {
                 set(instr.output, .jsMap)
             }
+
+        case .declarePendingBundleModule(let op):
+            // We use .jsAnything as the type for the variables which will be exported later - it's hard to decide a better type upfront and those won't technically be true (since we might access a "var" variable before it has its final value).
+            let exportsMap = Dictionary(
+                uniqueKeysWithValues: op.exportNames.map { ($0, ILType.jsAnything) }
+            )
+            set(instr.output, .jsModule(exports: exportsMap))
 
         default:
             // Only simple instructions and block instruction with inner outputs are handled here
@@ -2543,9 +2659,107 @@ public struct JSTyper: Analyzer {
             case .rest:
                 // A rest parameter will just be an array. Currently, we don't support nested array types (i.e. .iterable(of: .integer)) or so, but once we do, we'd need to update this logic.
                 types.append(.jsArray)
+            case .either:
+                fatalError(".either parameters must be resolved to .plain at generation-time")
             }
         }
         return types
+    }
+
+    private mutating func processDestructuring<Iter: IteratorProtocol>(
+        _ pattern: DestructuringPattern,
+        on sourceVar: Variable?,
+        isRoot: Bool,
+        iterator: inout Iter,
+        isReassignment: Bool
+    ) where Iter.Element == Variable {
+        switch pattern {
+        case .object(let obj):
+            var extractedKeys: Set<String> = Set()
+            var hasComputedKeys: Bool = false
+            for prop in obj.properties {
+                if case .computed = prop.key {
+                    hasComputedKeys = true
+                    if isReassignment { _ = iterator.next() }
+                }
+
+                var propType = ILType.jsAnything
+                if isRoot, case .string(let property) = prop.key, let sourceVar {
+                    propType = inferPropertyType(of: property, on: sourceVar)
+                    extractedKeys.insert(property)
+                }
+
+                processDestructuringTarget(
+                    prop.target, on: sourceVar, iterator: &iterator,
+                    isReassignment: isReassignment, expectedType: propType)
+
+                if prop.hasDefaultValue, isReassignment { _ = iterator.next() }
+            }
+            if obj.hasRestElement {
+                var restType: ILType = .object()
+
+                if isRoot, let source = sourceVar {
+                    let sourceType = type(of: source)
+
+                    // If we only have literal strings in the destructuring pattern at current level, then:
+                    // RestType = SourceType - ExtractedKeys
+                    // If there are any computed keys, we cannot know what remains.
+                    if hasComputedKeys {
+                        restType = .object()
+                    } else {
+                        restType = .object(
+                            withProperties: Array(sourceType.properties.subtracting(extractedKeys)),
+                            withMethods: Array(sourceType.methods.subtracting(extractedKeys)),
+                            // We cannot destruct by a symbol other than with computed properties,
+                            // and those are not tracked in extractedKeys.
+                            withSymbolMethods: Array(sourceType.symbolMethods)
+                        )
+                    }
+                }
+
+                set(iterator.next()!, restType)
+            }
+        case .array(let arr):
+            for elem in arr.elements {
+                if let target = elem.target {
+                    processDestructuringTarget(
+                        target, on: sourceVar, iterator: &iterator,
+                        isReassignment: isReassignment, expectedType: .jsAnything)
+                }
+                if elem.hasDefaultValue, isReassignment { _ = iterator.next() }
+            }
+            if let target = arr.restTarget {
+                processDestructuringTarget(
+                    target, on: sourceVar, iterator: &iterator,
+                    isReassignment: isReassignment, expectedType: .jsArray)
+            }
+        }
+    }
+
+    private mutating func processDestructuringTarget<Iter: IteratorProtocol>(
+        _ target: DestructuringPattern.Target,
+        on sourceVar: Variable?,
+        iterator: inout Iter,
+        isReassignment: Bool,
+        expectedType: ILType
+    ) where Iter.Element == Variable {
+        switch target {
+        case .flatBinding:
+            set(iterator.next()!, expectedType)
+        case .pattern(let p):
+            processDestructuring(
+                p, on: sourceVar, isRoot: false, iterator: &iterator,
+                isReassignment: isReassignment)
+        case .property(_), .element(_), .superComputedProperty:
+            if isReassignment { _ = iterator.next()! }
+        case .computedProperty:
+            if isReassignment {
+                _ = iterator.next()!
+                _ = iterator.next()!
+            }
+        case .superProperty(_), .superElement(_):
+            break
+        }
     }
 
     private struct AnalyzerState {

@@ -22,6 +22,26 @@ public enum ECMAScriptVersion {
 
 /// Lifts a FuzzIL program to JavaScript.
 public class JavaScriptLifter: Lifter {
+    public static let wasmProxyPrefix = """
+        const fuzzing_imports = new Proxy({}, {
+            get: (target, moduleName) => {
+                return new Proxy({}, {
+                    get: (target, fieldName) => {
+                        if (moduleName === 'fuzzing-support') {
+                            if (fieldName === 'wasmtag') {
+                                return new WebAssembly.Tag({ 'parameters': ['i32'] });
+                            }
+                            if (fieldName === 'jstag') {
+                                return WebAssembly.JSTag;
+                            }
+                        }
+                        return () => undefined;
+                    }
+                });
+            }
+        });
+        """
+
     /// Prefix and suffix to surround the emitted code in
     private let prefix: String
     private let suffix: String
@@ -111,6 +131,7 @@ public class JavaScriptLifter: Lifter {
         var needToSupportProbing = false
         var needToSupportFixup = false
         var needToSupportWasm = false
+        var needToSupportWasmProxy = false
         var analyzer = DefUseAnalyzer(for: program)
         // If this program has a WasmModule, i.e. has a BeginWasmModule / EndWasmModule instruction, we need a typer to collect type information for lifting of that module.
         // This typer is shared across WasmLifters and a WasmLifter is only valid for a single WasmModule.
@@ -137,6 +158,7 @@ public class JavaScriptLifter: Lifter {
             if instr.op is Probe { needToSupportProbing = true }
             if instr.op is Fixup { needToSupportFixup = true }
             if instr.op is BeginWasmModule { needToSupportWasm = true }
+            if instr.op is RawWasmModule { needToSupportWasmProxy = true }
         }
         analyzer.finishAnalysis()
 
@@ -170,6 +192,10 @@ public class JavaScriptLifter: Lifter {
 
         if needToSupportFixup {
             w.emitBlock(JavaScriptFixupLifting.prefixCode)
+        }
+
+        if needToSupportWasmProxy {
+            w.emitBlock(JavaScriptLifter.wasmProxyPrefix)
         }
 
         // Singular operation handling.
@@ -1075,9 +1101,11 @@ public class JavaScriptLifter: Lifter {
             case .binaryOperation(let op):
                 var lhs = input(0)
                 let rhs = input(1)
-                // Special case: we need parenthesis when performing an exponentiation on a negative number literal, otherwise we get a syntax error:
+                // Special case: we need parenthesis when performing an exponentiation on a negative number literal or a unary expression, otherwise we get a syntax error:
                 // "Unary operator used immediately before exponentiation expression. Parenthesis must be used to disambiguate operator precedence"
-                if op.op == .Exp && lhs.type === NegativeNumberLiteral {
+                if op.op == .Exp
+                    && (lhs.type === NegativeNumberLiteral || lhs.type === UnaryExpression)
+                {
                     lhs = NumberLiteral.new("(\(lhs.text))")
                 }
                 let expr = BinaryExpression.new() + lhs + " " + op.op.token + " " + rhs
@@ -1108,37 +1136,31 @@ public class JavaScriptLifter: Lifter {
                 let VALUE = input(0)
                 w.emit("\(LET) \(V) = \(VALUE);")
 
-            case .destructArray(let op):
-                let outputs = w.declareAll(instr.outputs)
-                let ARRAY = input(0)
-                let PATTERN = liftArrayDestructPattern(
-                    indices: op.indices, outputs: outputs, hasRestElement: op.lastIsRest)
-                let LET = w.varKeyword
-                w.emit("\(LET) [\(PATTERN)] = \(ARRAY);")
-
-            case .destructArrayAndReassign(let op):
-                assert(inputs.dropFirst().allSatisfy({ $0.type === Identifier }))
-                let ARRAY = input(0)
-                let outputs = inputs.dropFirst().map({ $0.text })
-                let PATTERN = liftArrayDestructPattern(
-                    indices: op.indices, outputs: outputs, hasRestElement: op.lastIsRest)
-                w.emit("[\(PATTERN)] = \(ARRAY);")
-
-            case .destructObject(let op):
+            case .destruct(let op):
                 let outputs = w.declareAll(instr.outputs)
                 let OBJ = input(0)
-                let PATTERN = liftObjectDestructPattern(
-                    properties: op.properties, outputs: outputs, hasRestElement: op.hasRestElement)
+                var inputIdx = 1
+                var outputIdx = 0
+                let PATTERN = liftDestructuringPattern(
+                    op.pattern, isReassign: false, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                    inputs: inputs.map { $0.text }, outputs: outputs)
                 let LET = w.varKeyword
-                w.emit("\(LET) {\(PATTERN)} = \(OBJ);")
+                w.emit("\(LET) \(PATTERN) = \(OBJ);")
 
-            case .destructObjectAndReassign(let op):
-                assert(inputs.dropFirst().allSatisfy({ $0.type === Identifier }))
+            case .destructAndReassign(let op):
                 let OBJ = input(0)
-                let outputs = inputs.dropFirst().map({ $0.text })
-                let PATTERN = liftObjectDestructPattern(
-                    properties: op.properties, outputs: outputs, hasRestElement: op.hasRestElement)
-                w.emit("({\(PATTERN)} = \(OBJ));")
+                var inputIdx = 1
+                var outputIdx = 0
+                let PATTERN = liftDestructuringPattern(
+                    op.pattern, isReassign: true, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                    inputs: inputs.map { $0.text }, outputs: [],
+                    resolveTarget: { i in w.ensureIsIdentifier(inputs[i], for: instr.input(i)).text
+                    })
+                if case .object = op.pattern {
+                    w.emit("(\(PATTERN) = \(OBJ));")
+                } else {
+                    w.emit("\(PATTERN) = \(OBJ);")
+                }
 
             case .compare(let op):
                 let lhs = input(0)
@@ -1464,21 +1486,23 @@ public class JavaScriptLifter: Lifter {
                 } else {
                     switch op.header {
                     case .simple:
-                        let LET = w.declarationKeyword(for: instr.innerOutput(0))
+                        let LET =
+                            op.usingType != .none
+                            ? op.usingType.rawValue
+                            : w.declarationKeyword(for: instr.innerOutput(0))
                         let V = w.declare(instr.innerOutput(0))
                         w.emit("\(prefix)\(loopKeyword) (\(LET) \(V) of \(OBJ)) {")
-                    case .arrayDestruct(let indices, let hasRest):
+                    case .destruct(let pattern):
                         let LET = w.varKeyword
                         let outputs = w.declareAll(instr.innerOutputs.dropLast())
-                        let PATTERN = liftArrayDestructPattern(
-                            indices: indices, outputs: outputs, hasRestElement: hasRest)
-                        w.emit("\(prefix)\(loopKeyword) (\(LET) [\(PATTERN)] of \(OBJ)) {")
-                    case .objectDestruct(let properties, let hasRest):
-                        let LET = w.varKeyword
-                        let outputs = w.declareAll(instr.innerOutputs.dropLast())
-                        let PATTERN = liftObjectDestructPattern(
-                            properties: properties, outputs: outputs, hasRestElement: hasRest)
-                        w.emit("\(prefix)\(loopKeyword) (\(LET) {\(PATTERN)} of \(OBJ)) {")
+                        // Note: ForLoop patterns don't have inputs for computed keys or defaults right now.
+                        var nextInputIndex = 1
+                        var nextOutputIndex = 0
+                        let PATTERN = liftDestructuringPattern(
+                            pattern, isReassign: false,
+                            inputIdx: &nextInputIndex, outputIdx: &nextOutputIndex,
+                            inputs: inputs.map { $0.text }, outputs: outputs)
+                        w.emit("\(prefix)\(loopKeyword) (\(LET) \(PATTERN) of \(OBJ)) {")
                     }
                 }
                 w.enterNewBlock()
@@ -1591,6 +1615,19 @@ public class JavaScriptLifter: Lifter {
                 w.declare(instr.output)
                 break
 
+            case .declarePendingBundleModule(let op):
+                moduleNames[instr.output] = op.moduleName
+                w.declare(instr.output)
+                break
+
+            case .beginPendingBundleModule:
+                // The 1st input is the DeclarePendingBundleModule operation.
+                let moduleName = moduleNames[instr.input(0)]!
+                w.emitRaw("// JS_BUNDLE_MODULE:\(moduleName)")
+
+            case .endPendingBundleModule:
+                break
+
             case .beginBundleModuleEntryPoint:
                 w.emitRaw("// JS_BUNDLE_MODULE_ENTRYPOINT")
 
@@ -1621,6 +1658,16 @@ public class JavaScriptLifter: Lifter {
                 let moduleName = moduleNames[instr.input(0)]!
                 let deferKeyword = op.isDeferred ? "defer " : ""
                 w.emit("import \(deferKeyword)* as \(output) from \"\(moduleName)\";")
+
+            case .dynamicImport(let op):
+                let importKeyword = op.isDeferred ? "import.defer" : "import"
+                let expr =
+                    if let moduleName = moduleNames[instr.input(0)] {
+                        CallExpression.new() + importKeyword + "(\"\(moduleName)\")"
+                    } else {
+                        CallExpression.new() + importKeyword + "(" + inputAsIdentifier(0) + ")"
+                    }
+                w.assign(expr, to: instr.output)
 
             case .loadNewTarget:
                 w.assign(Identifier.new("new.target"), to: instr.output)
@@ -1766,7 +1813,7 @@ public class JavaScriptLifter: Lifter {
                 w.enterNewBlock()
                 liftByteArray(op.bytes, to: &w)
                 w.leaveCurrentBlock()
-                w.emit("])));")
+                w.emit("])), fuzzing_imports);")
 
             case .createWasmTable(let op):
                 let V = w.declare(instr.output)
@@ -1777,10 +1824,19 @@ public class JavaScriptLifter: Lifter {
                     type = "externref"
                 case .wasmFuncRef():
                     type = "anyfunc"
-                // TODO(mliedtke): add tables for i31ref.
+                case .wasmI31Ref():
+                    type = "i31ref"
+                case .wasmAnyRef():
+                    type = "anyref"
+                case .wasmEqRef():
+                    type = "eqref"
+                case .wasmStructRef():
+                    type = "structref"
+                case .wasmArrayRef():
+                    type = "arrayref"
                 // TODO(pawkra): add shared ref variants.
                 default:
-                    fatalError("Unknown table type")
+                    fatalError("Unknown table type: \(op.tableType.elementType)")
                 }
 
                 let isTable64: Bool = op.tableType.isTable64
@@ -1902,6 +1958,8 @@ public class JavaScriptLifter: Lifter {
                 .wasmTableGrow(_),
                 .wasmCallIndirect(_),
                 .wasmCallDirect(_),
+                .wasmCallRef(_),
+                .wasmReturnCallRef(_),
                 .wasmReturnCallDirect(_),
                 .wasmReturnCallIndirect(_),
                 .wasmMemoryLoad(_),
@@ -1981,6 +2039,8 @@ public class JavaScriptLifter: Lifter {
                 .wasmStructSet(_),
                 .wasmRefNull(_),
                 .wasmRefIsNull(_),
+                .wasmRefAsNonNull(_),
+                .wasmRefFunc(_),
                 .wasmRefEq(_),
                 .wasmRefI31(_),
                 .wasmI31Get(_),
@@ -2261,15 +2321,130 @@ public class JavaScriptLifter: Lifter {
     ) -> String {
         assert(outputs.count == properties.count + (hasRestElement ? 1 : 0))
 
-        var objectPattern = ""
+        var props = [String]()
         for (property, output) in zip(properties, outputs) {
-            objectPattern += "\"\(property)\":\(output),"
+            props.append("\"\(property)\":\(output)")
         }
         if hasRestElement {
-            objectPattern += "...\(outputs.last!)"
+            props.append("...\(outputs.last!)")
         }
 
-        return objectPattern
+        return props.joined(separator: ",")
+    }
+
+    private func liftDestructuringTarget(
+        _ target: DestructuringPattern.Target, isReassign: Bool,
+        inputIdx: inout Int, outputIdx: inout Int,
+        inputs: [String], outputs: [String],
+        resolveTarget: ((Int) -> String)? = nil
+    ) -> String {
+        switch target {
+        case .flatBinding:
+            let propertyName =
+                isReassign
+                ? (resolveTarget?(inputIdx) ?? inputs[inputIdx]) : outputs[outputIdx]
+            if isReassign { inputIdx += 1 } else { outputIdx += 1 }
+            return propertyName
+        case .pattern(let p):
+            return liftDestructuringPattern(
+                p, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
+        case .property(let propertyName):
+            let obj = resolveTarget?(inputIdx) ?? inputs[inputIdx]
+            inputIdx += 1
+            return "\(obj)\(liftMemberAccess(propertyName))"
+        case .element(let index):
+            let obj = resolveTarget?(inputIdx) ?? inputs[inputIdx]
+            inputIdx += 1
+            return "\(obj)[\(index)]"
+        case .computedProperty:
+            let obj = resolveTarget?(inputIdx) ?? inputs[inputIdx]
+            inputIdx += 1
+            let key = inputs[inputIdx]
+            inputIdx += 1
+            return "\(obj)[\(key)]"
+        case .superProperty(let propertyName):
+            return "super\(liftMemberAccess(propertyName))"
+        case .superElement(let index):
+            return "super[\(index)]"
+        case .superComputedProperty:
+            let key = inputs[inputIdx]
+            inputIdx += 1
+            return "super[\(key)]"
+        }
+    }
+
+    private func liftDestructuringPattern(
+        _ pattern: DestructuringPattern, isReassign: Bool,
+        inputIdx: inout Int, outputIdx: inout Int,
+        inputs: [String], outputs: [String],
+        resolveTarget: ((Int) -> String)? = nil
+    ) -> String {
+        switch pattern {
+        case .object(let obj):
+            var props = [String]()
+            for prop in obj.properties {
+                var keyStr = ""
+                switch prop.key {
+                case .string(let s): keyStr = "\"\(s)\""
+                case .computed:
+                    keyStr = "[\(inputs[inputIdx])]"
+                    inputIdx += 1
+                }
+
+                let targetStr = liftDestructuringTarget(
+                    prop.target, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                    inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
+
+                var defStr = ""
+                if prop.hasDefaultValue {
+                    defStr = "=\(inputs[inputIdx])"
+                    inputIdx += 1
+                }
+
+                props.append("\(keyStr):\(targetStr)\(defStr)")
+            }
+            if obj.hasRestElement {
+                let targetStr =
+                    isReassign
+                    ? (resolveTarget?(inputIdx) ?? inputs[inputIdx]) : outputs[outputIdx]
+                if isReassign { inputIdx += 1 } else { outputIdx += 1 }
+                props.append("...\(targetStr)")
+            }
+            return "{\(props.joined(separator: ","))}"
+
+        case .array(let arr):
+            var elems = [String]()
+            for elem in arr.elements {
+                if let target = elem.target {
+                    let targetStr = liftDestructuringTarget(
+                        target, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                        inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
+                    if elem.hasDefaultValue {
+                        elems.append("\(targetStr)=\(inputs[inputIdx])")
+                        inputIdx += 1
+                    } else {
+                        elems.append(targetStr)
+                    }
+                } else {
+                    assert(!elem.hasDefaultValue)
+                    elems.append("")
+                }
+            }
+            if let restTarget = arr.restTarget {
+                let targetStr = liftDestructuringTarget(
+                    restTarget, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                    inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
+                elems.append("...\(targetStr)")
+            }
+            if let last = arr.elements.last, last.target == nil, arr.restTarget == nil {
+                // In JavaScript, a single trailing comma in an array destructuring pattern (e.g. `[x, ]`)
+                // is ignored, resulting in a pattern of length 1. To represent an actual elision at
+                // the very end (length 2), we must emit `[x, ,]`. Hence the extra empty element.
+                elems.append("")
+            }
+            return "[\(elems.joined(separator: ","))]"
+        }
     }
 
     private func liftFloatValue(_ value: Double) -> Expression {

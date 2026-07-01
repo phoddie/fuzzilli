@@ -2,6 +2,13 @@ const Parser = require("@babel/parser");
 const protobuf = require("protobufjs");
 const fs = require('fs');
 
+const USING_TYPES = {
+    NONE: 0,
+    USING: 1,
+    AWAIT_USING: 2
+};
+
+
 if (process.argv.length < 5) {
     console.error(`Usage: node ${process.argv[1]} path/to/ast.proto path/to/code.js path/to/output.ast.proto`);
     process.exit(0);
@@ -122,6 +129,74 @@ function parse(script, proto) {
         return statements;
     }
 
+    function parseTargetAndDefault(node) {
+      let targetNode = node;
+      let defaultValue = null;
+      if (node.type === "AssignmentPattern") {
+        targetNode = node.left;
+        defaultValue = visitExpression(node.right);
+      }
+
+      return {
+        target: visitLValue(targetNode),
+        defaultValue: defaultValue,
+      };
+    }
+
+    function parsePattern(id) {
+      if (id.type === "Identifier") {
+        return { name: id.name };
+      } else if (id.type === "ObjectPattern") {
+        let properties = [];
+        let restTarget = undefined;
+        for (let prop of id.properties) {
+          if (prop.type === "ObjectProperty") {
+            let key = visitMemberKey(prop);
+            let { target, defaultValue } = parseTargetAndDefault(prop.value);
+
+            let outProp = { key, target };
+            if (defaultValue !== null) outProp.defaultValue = defaultValue;
+
+            properties.push(make("ObjectPatternProperty", outProp));
+          } else if (prop.type === "RestElement") {
+            restTarget = visitLValue(prop.argument);
+          } else {
+            assert(
+              false,
+              "Unsupported object destructuring property type: " + prop.type,
+            );
+          }
+        }
+        let obj = { properties: properties };
+        if (restTarget !== undefined) obj.restTarget = restTarget;
+        return { objectPattern: make("ObjectPattern", obj) };
+      } else if (id.type === "ArrayPattern") {
+        let elements = [];
+        let restTarget = undefined;
+        for (let i = 0; i < id.elements.length; i++) {
+          let elem = id.elements[i];
+          if (elem === null) {
+            elements.push(make("ArrayPatternElement", {})); // elision (hole)
+            continue;
+          }
+          if (elem.type === "RestElement") {
+            restTarget = visitLValue(elem.argument);
+            continue;
+          }
+          let { target, defaultValue } = parseTargetAndDefault(elem);
+          let outElem = { target };
+          if (defaultValue !== null) outElem.defaultValue = defaultValue;
+
+          elements.push(make("ArrayPatternElement", outElem));
+        }
+        let arrPat = { elements };
+        if (restTarget !== undefined) arrPat.restTarget = restTarget;
+        return { arrayPattern: make("ArrayPattern", arrPat) };
+      } else {
+        assert(false, "Unsupported pattern type: " + id.type);
+      }
+    }
+
     function visitVariableDeclaration(node) {
         let kind;
         let disposable;
@@ -147,11 +222,16 @@ function parse(script, proto) {
         let declarations = [];
         for (let decl of node.declarations) {
             assert(decl.type === 'VariableDeclarator', "Expected variable declarator nodes inside variable declaration, found " + decl.type);
-            let outDecl = {name: decl.id.name};
+            let outDecl = parsePattern(decl.id);
             if (decl.init !== null) {
                 outDecl.value = visitExpression(decl.init);
             }
-            declarations.push(make('VariableDeclarator', outDecl));
+            if (disposable) {
+                assert(outDecl.name, "Disposable variable declarations cannot be destructured");
+                declarations.push(make('SimpleVariableDeclarator', outDecl));
+            } else {
+                declarations.push(make('VariableDeclarator', outDecl));
+            }
         }
 
         const type = disposable ? 'DisposableVariableDeclaration' : 'VariableDeclaration'
@@ -335,27 +415,42 @@ function parse(script, proto) {
                 return makeStatement('ForLoop', forLoop);
             }
             case 'ForInStatement': {
-                assert(node.left.type === 'VariableDeclaration', "Expected variable declaration as init part of a for-in loop, found " + node.left.type);
-                assert(node.left.declarations.length === 1, "Expected exactly one variable declaration in the init part of a for-in loop");
-                let decl = node.left.declarations[0];
                 let forInLoop = {};
-                let initDecl = { name: decl.id.name };
-                assert(decl.init == null, "Expected no initial value for the variable declared as part of a for-in loop")
-                forInLoop.left = make('VariableDeclarator', initDecl);
+                if (node.left.type === 'VariableDeclaration') {
+                    assert(node.left.declarations.length === 1, "Expected exactly one variable declaration in the init part of a for-in loop");
+                    let decl = node.left.declarations[0];
+                    let initDecl = { name: decl.id.name };
+                    assert(decl.init == null, "Expected no initial value for the variable declared as part of a for-in loop");
+                    forInLoop.declaration = make('SimpleVariableDeclarator', initDecl);
+                } else {
+                    forInLoop.lvalue = visitLValue(node.left);
+                }
                 forInLoop.right = visitExpression(node.right);
                 forInLoop.body = visitStatement(node.body);
                 return makeStatement('ForInLoop', forInLoop);
             }
             case 'ForOfStatement': {
-                assert(node.left.type === 'VariableDeclaration', "Expected variable declaration as init part of a for-in loop, found " + node.left.type);
-                assert(node.left.declarations.length === 1, "Expected exactly one variable declaration in the init part of a for-in loop");
-                let decl = node.left.declarations[0];
                 let forOfLoop = {};
-                let initDecl = { name: decl.id.name };
-                assert(decl.init == null, "Expected no initial value for the variable declared as part of a for-in loop")
-                forOfLoop.left = make('VariableDeclarator', initDecl);
+                let usingType = USING_TYPES.NONE;
+                if (node.left.type === 'VariableDeclaration') {
+                    assert(node.left.declarations.length === 1, "Expected exactly one variable declaration in the init part of a for-of loop");
+                    let decl = node.left.declarations[0];
+                    assert(decl.init == null, "Expected no initial value for the variable declared as part of a for-of loop");
+
+                    if (node.left.kind === 'using') {
+                        usingType = USING_TYPES.USING;
+                    } else if (node.left.kind === 'await using') {
+                        usingType = USING_TYPES.AWAIT_USING;
+                    }
+                    let parsedPattern = parsePattern(decl.id);
+                    forOfLoop.declaration = make('VariableDeclarator', parsedPattern);
+                } else {
+                    forOfLoop.lvalue = visitLValue(node.left);
+                }
+                forOfLoop.usingType = usingType;
                 forOfLoop.right = visitExpression(node.right);
                 forOfLoop.body = visitStatement(node.body);
+                forOfLoop.isAsync = !!node.await;
                 return makeStatement('ForOfLoop', forOfLoop);
             }
             case 'BreakStatement': {
@@ -439,6 +534,57 @@ function parse(script, proto) {
         return Expression.create(expression);
     }
 
+    function makeLValue(name, fields) {
+        // Babel AST node names are UpperCamelCase but Protobuf oneof fields are lowerCamelCased.
+        let fieldName = name.charAt(0).toLowerCase() + name.slice(1);
+        let type = proto.lookupType('compiler.protobuf.' + name);
+        assertNoError(type.verify(fields));
+        let message = type.create(fields);
+        let lvalue = { [fieldName]: message };
+        let LValueType = proto.lookupType('compiler.protobuf.LValue');
+        assertNoError(LValueType.verify(lvalue));
+        return LValueType.create(lvalue);
+    }
+
+    function parseMemberExpressionFields(node) {
+        if (node.object && node.object.type === 'Super') {
+            let out = {};
+            if (node.computed) {
+                out.expression = visitExpression(node.property);
+            } else {
+                assert(node.property.type === 'Identifier', "Expected node.property.type to be exactly 'Identifier'");
+                assert(node.property.name != 'Super', "super.super(...) is not allowed");
+                out.name = node.property.name;
+            }
+            out.isOptional = node.type === 'OptionalMemberExpression';
+            return { isSuper: true, fields: out };
+        }
+        let object = visitExpression(node.object);
+        let out = { object };
+        if (node.computed) {
+            out.expression = visitExpression(node.property);
+        } else {
+            assert(node.property.type === 'Identifier', "Expected node.property.type to be exactly 'Identifier'");
+            out.name = node.property.name;
+        }
+        out.isOptional = node.type === 'OptionalMemberExpression';
+        return { isSuper: false, fields: out };
+    }
+
+    function visitLValue(node) {
+        if (node.type === 'Identifier') {
+            return makeLValue('Identifier', { name: node.name });
+        } else if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
+            let parsed = parseMemberExpressionFields(node);
+            return makeLValue(parsed.isSuper ? 'SuperMemberExpression' : 'MemberExpression', parsed.fields);
+        } else if (node.type === 'ArrayPattern' || node.type === 'ObjectPattern') {
+            let parsed = parsePattern(node);
+            return makeLValue('DestructuringPattern', parsed);
+        } else {
+            assert(false, "Unsupported LValue node type: " + node.type);
+        }
+    }
+
     function visitExpression(node) {
         const Expression = proto.lookupType('compiler.protobuf.Expression');
         switch (node.type) {
@@ -473,9 +619,9 @@ function parse(script, proto) {
             }
             case 'AssignmentExpression': {
                 let operator = node.operator;
-                let lhs = visitExpression(node.left);
+                let lvalue = visitLValue(node.left);
                 let rhs = visitExpression(node.right);
-                return makeExpression('AssignmentExpression', { operator, lhs, rhs });
+                return makeExpression('AssignmentExpression', { operator, lvalue, rhs });
             }
             case 'ObjectExpression': {
                 let fields = [];
@@ -599,28 +745,8 @@ function parse(script, proto) {
             }
             case 'MemberExpression':
             case 'OptionalMemberExpression': {
-                if (node.object && node.object.type === 'Super') {
-                    let out = {};
-                    if (node.computed) {
-                        out.expression = visitExpression(node.property);
-                    } else {
-                        assert(node.property.type === 'Identifier', "Expected node.property.type to be exactly 'Identifier'");
-                        assert(node.property.name != 'Super', "super.super(...) is not allowed");
-                        out.name = node.property.name;
-                    }
-                    out.isOptional = node.type === 'OptionalMemberExpression';
-                    return makeExpression('SuperMemberExpression', out);
-                }
-                let object = visitExpression(node.object);
-                let out = { object };
-                if (node.computed) {
-                    out.expression = visitExpression(node.property);
-                } else {
-                    assert(node.property.type === 'Identifier', "Expected node.property.type to be exactly 'Identifier'");
-                    out.name = node.property.name;
-                }
-                out.isOptional = node.type === 'OptionalMemberExpression';
-                return makeExpression('MemberExpression', out);
+                let parsed = parseMemberExpressionFields(node);
+                return makeExpression(parsed.isSuper ? 'SuperMemberExpression' : 'MemberExpression', parsed.fields);
             }
             case 'UnaryExpression': {
                 assert(node.prefix, "Assertion failed for condition: node.prefix");

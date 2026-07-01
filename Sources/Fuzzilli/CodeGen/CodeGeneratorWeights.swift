@@ -185,7 +185,11 @@ public let codeGeneratorWeights = [
     "ComplexForLoopGenerator":                  10,
     "ForInLoopGenerator":                       10,
     "ForOfLoopGenerator":                       10,
+    "ForOfWithUsingLoopGenerator":              10,
+    "ForOfWithAwaitUsingLoopGenerator":         10,
     "ForAwaitOfLoopGenerator":                  10,
+    "ForAwaitOfWithUsingLoopGenerator":         10,
+    "ForAwaitOfWithAwaitUsingLoopGenerator":    10,
     "ForOfWithArrayDestructLoopGenerator":      3,
     "ForAwaitOfWithArrayDestructLoopGenerator": 3,
     "ForOfWithObjectDestructLoopGenerator":      3,
@@ -225,6 +229,12 @@ public let codeGeneratorWeights = [
     "TypedArrayLastIndexGenerator":             5,
     "FastToSlowPropertiesGenerator":            10,
     "IteratorGenerator":                        5,
+    "DisposableGenerator":                      5,
+    "AsyncDisposableGenerator":                 5,
+    "DisposableArrayGenerator":                 5,
+    "AsyncDisposableArrayGenerator":            5,
+    "AsyncIterableDisposableGenerator":         5,
+    "AsyncIterableAsyncDisposableGenerator":    5,
     "ConstructWithDifferentNewTargetGenerator": 5,
     "ObjectHierarchyGenerator":                 10,
     "ApiConstructorCallGenerator":              15,
@@ -237,6 +247,7 @@ public let codeGeneratorWeights = [
     // JS generators for wasm features (e.g. APIs on the WebAssembly global object).
     "WasmGlobalGenerator":                      4,
     "WasmMemoryGenerator":                      4,
+    "WasmTableGenerator":                       4,
     "WasmMemoryToResizableBufferGenerator":     5,
     "WasmMemoryToFixedLengthBufferGenerator":   5,
     "WasmMemoryJSGrowGenerator":                5,
@@ -246,9 +257,11 @@ public let codeGeneratorWeights = [
     // For generating bundles
     "BundleScriptGenerator":                    1,
     "BundleModuleGenerator":                    5,
+    "PendingBundleModuleGenerator":             5,
     "BundleModuleEntryPointGenerator":          5,
     "ModuleImportGenerator":                    20,
     "ModuleNamespaceImportGenerator":           10,
+    "DynamicImportGenerator":                   15,
     "ModuleExportGenerator":                    20,
 
     //
@@ -258,6 +271,7 @@ public let codeGeneratorWeights = [
     // This weight is important as we need to have a module for the other generators to work.
     // As they all require .wasm context.
     "WasmModuleGenerator":                      35,
+    "BinaryenWasmGenerator":                    10,
     "WasmDefineMemoryGenerator":                8,
     "WasmDefineDataSegmentGenerator":           8,
     "WasmDropDataSegmentGenerator":             5,
@@ -280,6 +294,8 @@ public let codeGeneratorWeights = [
     "WasmDropElementSegmentGenerator":          1,
     "WasmTableSizeGenerator":                   5,
     "WasmTableGrowGenerator":                   1,
+    "WasmTableGetGenerator":                    5,
+    "WasmTableSetGenerator":                    5,
     "WasmGlobalStoreGenerator":                 2,
     "WasmGlobalLoadGenerator":                  2,
     "WasmReassignmentGenerator":                2,
@@ -360,7 +376,9 @@ public let codeGeneratorWeights = [
     "WasmJsCallGenerator":                      30,
     "WasmCallIndirectGenerator":                5,
     "WasmCallDirectGenerator":                  10,
+    "WasmCallRefGenerator":                     10,
     "WasmReturnCallDirectGenerator":            10,
+    "WasmReturnCallRefGenerator":               10,
     "WasmReturnCallIndirectGenerator":          10,
 
     // Simd Generators
@@ -402,6 +420,8 @@ public let codeGeneratorWeights = [
     "WasmStructSetGenerator":                   5,
     "WasmRefNullGenerator":                     5,
     "WasmRefIsNullGenerator":                   5,
+    "WasmRefAsNonNullGenerator":                5,
+    "WasmRefFuncGenerator":                     5,
     "WasmRefEqGenerator":                       5,
     "WasmRefI31Generator":                      5,
     "WasmI31GetGenerator":                      5,

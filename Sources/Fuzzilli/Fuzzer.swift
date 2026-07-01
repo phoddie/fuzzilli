@@ -241,9 +241,23 @@ public class Fuzzer {
 
     /// Schedule work on this fuzzer's dispatch queue and wait for its completion.
     public func sync(do block: () -> Void) {
-        queue.sync {
-            guard !self.isStopped else { return }
+        guard !self.isStopped else { return }
+        if Fuzzer.current === self {
             block()
+        } else {
+            queue.sync {
+                guard !self.isStopped else { return }
+                block()
+            }
+        }
+    }
+
+    /// Schedule work on this fuzzer's dispatch queue and wait for its completion.
+    public func sync<T>(do block: () -> T) -> T {
+        if Fuzzer.current === self {
+            block()
+        } else {
+            queue.sync(execute: block)
         }
     }
 
@@ -308,41 +322,6 @@ public class Fuzzer {
                 self.logger.warning(
                     "Fuzzer appears unresponsive (watchdog only triggered after \(Int(interval))s instead of 60s)."
                 )
-            }
-        }
-
-        // Install a timer to monitor for faulty code generators and program templates.
-        timers.scheduleTask(every: 5 * Minutes) {
-            let nameMaxLength = self.codeGenerators.map({ $0.name.count }).max()!
-
-            for generator in self.codeGenerators {
-                for stub in generator.parts {
-                    if stub.invocationCount > 100 && stub.invocationSuccessRate! < 0.2 {
-                        let percentage = Statistics.percentageOrNa(stub.invocationSuccessRate, 7)
-                        let name = stub.name.rightPadded(toLength: nameMaxLength)
-                        let invocations = String(format: "%12d", stub.invocationCount)
-                        self.logger.warning(
-                            "Code generator \(name) might have too restrictive dynamic requirements. Its successful invocation rate is only \(percentage)% after \(invocations) invocations"
-                        )
-                    }
-                    if stub.totalSamples >= 100 && stub.correctnessRate! < 0.05 {
-                        let name = stub.name.rightPadded(toLength: nameMaxLength)
-                        let percentage = Statistics.percentageOrNa(stub.correctnessRate, 7)
-                        let totalSamples = String(format: "%10d", stub.totalSamples)
-                        self.logger.warning(
-                            "Code generator \(name) might be broken. Correctness rate is only \(percentage)% after \(totalSamples) generated samples"
-                        )
-                    }
-                }
-            }
-            for template in self.programTemplates {
-                if template.totalSamples >= 100 && template.correctnessRate! < 0.05 {
-                    let percentage = Statistics.percentageOrNa(template.correctnessRate, 7)
-                    let totalSamples = String(format: "%10d", template.totalSamples)
-                    self.logger.warning(
-                        "Program template \(template.name) might be broken. Correctness rate is only \(percentage)% after \(totalSamples) generated samples"
-                    )
-                }
             }
         }
 
@@ -682,17 +661,21 @@ public class Fuzzer {
         }
 
         // Third and final attempt at fixing up the program: simply wrap the entire program in a try-catch block.
-        b.buildTryCatchFinally(
-            tryBody: {
-                b.adopting {
-                    for instr in program.code {
-                        b.adopt(instr)
+        // We cannot wrap a bundle in a try-catch block, so skip this step for bundles.
+        // TODO(marja): Find a solution that works for bundles.
+        if !program.code.isBundle {
+            b.buildTryCatchFinally(
+                tryBody: {
+                    b.adopting {
+                        for instr in program.code {
+                            b.adopt(instr)
+                        }
                     }
-                }
-            }, catchBody: { _ in })
-        program = b.finalize()
+                }, catchBody: { _ in })
+            program = b.finalize()
+            result = importProgram(program, origin: origin)
+        }
 
-        result = importProgram(program, origin: origin)
         assert(Fuzzer.maxProgramImportFixupAttempts == 3)
         return (result, 3)
     }
@@ -955,9 +938,10 @@ public class Fuzzer {
     /// Constructs a new ProgramBuilder using this fuzzing context.
     public func makeBuilder(forMutating parent: Program? = nil) -> ProgramBuilder {
         dispatchPrecondition(condition: .onQueue(queue))
+        let isBundle = parent?.code.isBundle ?? config.generateBundle
         // Program ancestor chains are only constructed if inspection mode is enabled
         let parent = config.enableInspection ? parent : nil
-        return ProgramBuilder(for: self, parent: parent, isBundle: config.generateBundle)
+        return ProgramBuilder(for: self, parent: parent, isBundle: isBundle)
     }
 
     /// Performs one round of fuzzing.
@@ -1200,7 +1184,29 @@ public class Fuzzer {
             }
         }
 
-        // TODO(marja): when we have modules, add a "bundles" startup test which asserts that bundles are handled correctly.
+        // Check if we can execute bundles with modules correctly if we are generating bundles.
+        if config.generateBundle {
+            b = makeBuilder()
+            let moduleVariable = b.buildBundleModule(name: "module.mjs") {
+                let v = b.loadInt(42)
+                b.exportVariables(variables: [v], exportNames: ["foo"])
+            }
+
+            b.buildBundleModuleEntryPoint {
+                let importInstruction = b.importVariables(
+                    module: moduleVariable, importNames: ["foo"])
+                let imported = importInstruction.output
+                let v2 = b.loadInt(43)
+                b.binary(imported, v2, with: .Add)
+            }
+
+            execution = execute(b.finalize(), purpose: .startup)
+            guard case .succeeded = execution.outcome else {
+                logger.fatal(
+                    "Bundle test did not execute successfully"
+                        + "\nstdout:\n\(execution.stdout)\nstderr:\n\(execution.stderr)")
+            }
+        }
 
         if !hasAnyCrashTests {
             logger.warning(

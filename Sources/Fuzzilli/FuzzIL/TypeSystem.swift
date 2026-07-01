@@ -102,6 +102,7 @@
 //
 // See also Tests/FuzzilliTests/TypeSystemTest.swift for examples of the various properties and features of this type system.
 //
+
 public struct ILType: Hashable {
     public static let dynamicObjectGroupPrefixes = [
         "_fuzz_Object", "_fuzz_WasmModule", "_fuzz_WasmExports", "_fuzz_Class",
@@ -179,11 +180,12 @@ public struct ILType: Hashable {
     /// Constructs an object type.
     public static func object(
         ofGroup group: String? = nil, withProperties properties: [String] = [],
-        withMethods methods: [String] = [], withWasmType wasmExt: WasmTypeExtension? = nil
+        withMethods methods: [String] = [], withSymbolMethods symbolMethods: [String] = [],
+        withWasmType wasmExt: WasmTypeExtension? = nil
     ) -> ILType {
         let ext = TypeExtension(
-            group: group, properties: Set(properties), methods: Set(methods), signature: nil,
-            wasmExt: wasmExt)
+            group: group, properties: Set(properties), methods: Set(methods),
+            symbolMethods: Set(symbolMethods), signature: nil, wasmExt: wasmExt)
         return ILType(definiteType: .object, ext: ext)
     }
 
@@ -337,6 +339,9 @@ public struct ILType: Hashable {
     public static func wasmFuncRef(shared: Bool = false) -> ILType {
         wasmRef(.WasmFunc, shared: shared, nullability: true)
     }
+    public static func wasmRefFunc(shared: Bool = false) -> ILType {
+        wasmRef(.WasmFunc, shared: shared, nullability: false)
+    }
     public static func wasmExnRef(shared: Bool = false) -> ILType {
         wasmRef(.WasmExn, shared: shared, nullability: true)
     }
@@ -390,8 +395,7 @@ public struct ILType: Hashable {
     }
 
     static func wasmTypeDef(description: WasmTypeDescription? = nil) -> ILType {
-        let typeDef = WasmTypeDefinition()
-        typeDef.description = description
+        let typeDef = WasmTypeDefinition(description)
         return ILType(
             definiteType: .wasmTypeDef,
             ext: TypeExtension(
@@ -556,7 +560,8 @@ public struct ILType: Hashable {
         // tracked ObjectGroups, they also subsume such that we can interchange
         // them in JS for efficient fuzzing, i.e. object0 and object1 can be
         // considered to have the same group, we then proceed with the other checks for subsumption.
-        guard group == nil || group == other.group || groupsMatchByPrefix(group, other.group) else {
+        guard group == nil || group == other.group || ILType.groupsMatchByPrefix(group, other.group)
+        else {
             return false
         }
 
@@ -572,6 +577,9 @@ public struct ILType: Hashable {
             return false
         }
         guard methods.isSubset(of: other.methods) else {
+            return false
+        }
+        guard symbolMethods.isSubset(of: other.symbolMethods) else {
             return false
         }
 
@@ -614,12 +622,16 @@ public struct ILType: Hashable {
     // This helps with the custom object groups.
     // This basically says that even though objects might have program local object groups, they can still subsume, if they belong to the same "subclass" indicated by having the same prefix (with a different number as a suffix).
     // These should match the custom object group types in JSTyper.swift
-    public func groupsMatchByPrefix(_ groupLhs: String?, _ groupRhs: String?) -> Bool {
+    public static func groupsMatchByPrefix(_ groupLhs: String?, _ groupRhs: String?) -> Bool {
         guard let lhs = groupLhs else {
             return false
         }
         guard let rhs = groupRhs else {
             return false
+        }
+
+        if lhs == "Symbol" && rhs.hasPrefix("Symbol.") {
+            return true
         }
 
         // Make sure that the groups themselves are not prefixes.
@@ -820,6 +832,10 @@ public struct ILType: Hashable {
         return ext?.methods ?? Set()
     }
 
+    public var symbolMethods: Set<String> {
+        return ext?.symbolMethods ?? Set()
+    }
+
     public var numProperties: Int {
         return ext?.properties.count ?? 0
     }
@@ -828,12 +844,20 @@ public struct ILType: Hashable {
         return ext?.methods.count ?? 0
     }
 
+    public var numSymbolMethods: Int {
+        return ext?.symbolMethods.count ?? 0
+    }
+
     public func randomProperty() -> String? {
         return ext?.properties.randomElement()
     }
 
     public func randomMethod() -> String? {
         return ext?.methods.randomElement()
+    }
+
+    public func randomSymbolMethod() -> String? {
+        return ext?.symbolMethods.randomElement()
     }
 
     // Returns how many additional inputs an operation using this type will need
@@ -903,10 +927,18 @@ public struct ILType: Hashable {
         // that means finding the set of shared properties and methods, which is imprecise but correct.
         let commonProperties = self.properties.intersection(other.properties)
         let commonMethods = self.methods.intersection(other.methods)
+        let commonSymbolMethods = self.symbolMethods.intersection(other.symbolMethods)
         let signature = self.signature == other.signature ? self.signature : nil  // TODO: this is overly coarse, we could also see if one signature subsumes the other, then take the subsuming one.
         let receiver =
             other.receiver != nil ? self.receiver?.intersection(with: other.receiver!) : nil
-        var group = self.group == other.group ? self.group : nil
+        var group: String? = nil
+        if self.group == other.group {
+            group = self.group
+        } else if ILType.groupsMatchByPrefix(self.group, other.group) {
+            group = self.group
+        } else if ILType.groupsMatchByPrefix(other.group, self.group) {
+            group = other.group
+        }
         let wasmExt =
             self.wasmType != nil && other.wasmType != nil
             ? self.wasmType!.union(other.wasmType!) : nil
@@ -936,6 +968,7 @@ public struct ILType: Hashable {
             definiteType: definiteType, possibleType: possibleType,
             ext: TypeExtension(
                 group: group, properties: commonProperties, methods: commonMethods,
+                symbolMethods: commonSymbolMethods,
                 signature: signature, wasmExt: wasmExt, receiver: receiver,
                 isEnumeration: isEnumeration, iterableElementType: iterableElementType,
                 exports: commonExports))
@@ -994,12 +1027,33 @@ public struct ILType: Hashable {
             return .nothing
         }
 
-        // Groups must either be equal or one of them must be nil, in which case
-        // the result will have the non-nil group as that is again the smaller type.
-        guard self.group == nil || other.group == nil || self.group == other.group else {
+        let symbolMethods = self.symbolMethods.union(other.symbolMethods)
+        guard symbolMethods.count == max(self.numSymbolMethods, other.numSymbolMethods) else {
             return .nothing
         }
-        let group = self.group ?? other.group
+
+        // Groups must either be equal or one of them must be nil, in which case
+        // the result will have the non-nil group as that is again the smaller type.
+        // If they match by prefix, the more specific group (the one with the longer prefix) is the result.
+        guard
+            self.group == nil || other.group == nil || self.group == other.group
+                || ILType.groupsMatchByPrefix(self.group, other.group)
+                || ILType.groupsMatchByPrefix(other.group, self.group)
+        else {
+            return .nothing
+        }
+        let group: String?
+        if self.group == nil {
+            group = other.group
+        } else if other.group == nil {
+            group = self.group
+        } else if self.group == other.group {
+            group = self.group
+        } else if ILType.groupsMatchByPrefix(self.group, other.group) {
+            group = other.group
+        } else {
+            group = self.group
+        }
 
         // For signatures we take a shortcut: if one signature subsumes the other, then the intersection
         // must be the subsumed signature. Additionally, we know that if there is an intersection, the
@@ -1065,8 +1119,10 @@ public struct ILType: Hashable {
         return ILType(
             definiteType: definiteType, possibleType: possibleType,
             ext: TypeExtension(
-                group: group, properties: properties, methods: methods, signature: signature,
-                wasmExt: wasmExt, receiver: receiver, isEnumeration: isEnumeration,
+                group: group, properties: properties, methods: methods,
+                symbolMethods: symbolMethods,
+                signature: signature, wasmExt: wasmExt, receiver: receiver,
+                isEnumeration: isEnumeration,
                 iterableElementType: iterableElementType, exports: commonExports))
     }
 
@@ -1155,8 +1211,10 @@ public struct ILType: Hashable {
         // We just take the self.wasmExt as they have to be the same, see `canMerge`.
         let ext = TypeExtension(
             group: group, properties: self.properties.union(other.properties),
-            methods: self.methods.union(other.methods), signature: signature, wasmExt: wasmExt,
-            receiver: receiver, isEnumeration: isEnumeration,
+            methods: self.methods.union(other.methods),
+            symbolMethods: self.symbolMethods.union(other.symbolMethods),
+            signature: signature, wasmExt: wasmExt, receiver: receiver,
+            isEnumeration: isEnumeration,
             iterableElementType: iterableElementType)
         return ILType(definiteType: definiteType, possibleType: possibleType, ext: ext)
     }
@@ -1359,6 +1417,14 @@ extension ILType: CustomStringConvertible {
                     params.append("withMethods: \(methods)")
                 }
             }
+            if !symbolMethods.isEmpty {
+                if abbreviate && symbolMethods.count > 5 {
+                    let selection = symbolMethods.prefix(3).map { "\"\($0)\"" }
+                    params.append("withSymbolMethods: [\(selection.joined(separator: ", ")), ...]")
+                } else {
+                    params.append("withSymbolMethods: \(symbolMethods)")
+                }
+            }
             return ".object(\(params.joined(separator: ", ")))"
         case .function:
             if let signature = functionSignature {
@@ -1552,6 +1618,7 @@ class TypeExtension: Hashable {
     // Properties and methods. Will only be populated if MayBe(.object()) is true.
     let properties: Set<String>
     let methods: Set<String>
+    let symbolMethods: Set<String>
 
     // The group name. Basically each group is its own sub type of the object type.
     // (For now), there is no subtyping for group: if two objects have a different
@@ -1578,11 +1645,13 @@ class TypeExtension: Hashable {
     let exports: [String: ILType]
 
     init?(
-        group: String? = nil, properties: Set<String>, methods: Set<String>, signature: Signature?,
+        group: String? = nil, properties: Set<String>, methods: Set<String>,
+        symbolMethods: Set<String> = [], signature: Signature?,
         wasmExt: WasmTypeExtension? = nil, receiver: ILType? = nil, isEnumeration: Bool = false,
         iterableElementType: ILType? = nil, exports: [String: ILType] = [:]
     ) {
-        if group == nil && properties.isEmpty && methods.isEmpty && signature == nil
+        if group == nil && properties.isEmpty && methods.isEmpty && symbolMethods.isEmpty
+            && signature == nil
             && wasmExt == nil && receiver == nil && isEnumeration == false
             && iterableElementType == nil && exports.isEmpty
         {
@@ -1591,6 +1660,7 @@ class TypeExtension: Hashable {
 
         self.properties = properties
         self.methods = methods
+        self.symbolMethods = symbolMethods
         self.group = group
         self.signature = signature
         self.wasmExt = wasmExt
@@ -1603,6 +1673,7 @@ class TypeExtension: Hashable {
     static func == (lhs: TypeExtension, rhs: TypeExtension) -> Bool {
         return lhs.properties == rhs.properties
             && lhs.methods == rhs.methods
+            && lhs.symbolMethods == rhs.symbolMethods
             && lhs.group == rhs.group
             && lhs.signature == rhs.signature
             && lhs.wasmExt == rhs.wasmExt
@@ -1616,6 +1687,7 @@ class TypeExtension: Hashable {
         hasher.combine(group)
         hasher.combine(properties)
         hasher.combine(methods)
+        hasher.combine(symbolMethods)
         hasher.combine(signature)
         hasher.combine(wasmExt)
         hasher.combine(receiver)
@@ -1674,17 +1746,8 @@ public class WasmFunctionDefinition: WasmTypeExtension {
     }
 
     init(_ signatureType: ILType?) {
-        assert(
-            signatureType == nil
-                || (signatureType!.wasmTypeDefinition?.description as? WasmSignatureTypeDescription)?
-                    .signature != nil
-        )
+        assert(signatureType == nil || signatureType!.isWasmSignatureTypeDef)
         self.signatureType = signatureType
-    }
-
-    // TODO(mliedtke): Is this needed and are its usages OK when we move to full wasm-gc types?
-    var signature: WasmSignature? {
-        (signatureType?.wasmTypeDefinition?.description as? WasmSignatureTypeDescription)?.signature
     }
 }
 
@@ -1754,7 +1817,11 @@ public class WasmLabelType: WasmTypeExtension {
 }
 
 public class WasmTypeDefinition: WasmTypeExtension {
-    var description: WasmTypeDescription? = nil
+    let description: WasmTypeDescription?
+
+    init(_ description: WasmTypeDescription? = nil) {
+        self.description = description
+    }
 
     override func isEqual(to other: WasmTypeExtension) -> Bool {
         guard let other = other as? WasmTypeDefinition else { return false }
@@ -1763,11 +1830,49 @@ public class WasmTypeDefinition: WasmTypeExtension {
 
     override func subsumes(_ other: WasmTypeExtension) -> Bool {
         guard let other = other as? WasmTypeDefinition else { return false }
-        return description == nil || other.description == nil || description == other.description
+        guard let description else { return true }
+        guard let otherDescription = other.description else { return false }
+        guard description.isFinal == otherDescription.isFinal else { return false }
+        return description.subsumes(otherDescription)
     }
 
     override public func hash(into hasher: inout Hasher) {
         hasher.combine(description)
+    }
+
+    override func union(_ other: WasmTypeExtension) -> WasmTypeExtension? {
+        guard let other = other as? WasmTypeDefinition else { return nil }
+
+        guard let description,
+            let otherDescription = other.description
+        else {
+            return WasmTypeDefinition()
+        }
+        guard description.isFinal == otherDescription.isFinal else { return nil }
+
+        if let common = description.union(otherDescription) {
+            return WasmTypeDefinition(common)
+        }
+
+        return nil
+    }
+
+    override func intersection(_ other: WasmTypeExtension) -> WasmTypeExtension? {
+        guard let other = other as? WasmTypeDefinition else { return nil }
+
+        guard let description else {
+            return WasmTypeDefinition(other.description)
+        }
+        guard let otherDescription = other.description else {
+            return WasmTypeDefinition(description)
+        }
+        guard description.isFinal == otherDescription.isFinal else { return nil }
+
+        if let common = description.intersection(otherDescription) {
+            return WasmTypeDefinition(common)
+        }
+
+        return nil
     }
 
     func getReferenceTypeTo(nullability: Bool) -> ILType {
@@ -1982,11 +2087,16 @@ public class WasmReferenceType: WasmTypeExtension {
                     if desc.get() == nil || otherDesc.get() == nil {
                         return .Index(.init())
                     }
-                    if desc.get() == otherDesc.get() {
-                        return self
+
+                    let selfType = desc.get()!
+                    let otherType = otherDesc.get()!
+
+                    if let common = selfType.union(otherType) {
+                        return .Index(UnownedWasmTypeDescription(common))
                     }
-                    if let abstract = desc.get()?.abstractHeapSupertype,
-                        let otherAbstract = otherDesc.get()?.abstractHeapSupertype,
+
+                    if let abstract = selfType.abstractHeapSupertype,
+                        let otherAbstract = otherType.abstractHeapSupertype,
                         let upperBound = abstract.union(otherAbstract)
                     {
                         return .Abstract(upperBound)
@@ -2020,10 +2130,19 @@ public class WasmReferenceType: WasmTypeExtension {
             case .Index(let desc):
                 switch other {
                 case .Index(let otherDesc):
-                    if desc.get() == otherDesc.get() || desc.get() == nil || otherDesc.get() == nil
-                    {
+                    guard let selfType = desc.get() else {
+                        return .Index(otherDesc)
+                    }
+
+                    guard let otherType = otherDesc.get() else {
                         return .Index(desc)
                     }
+
+                    if let common = selfType.intersection(otherType) {
+                        return .Index(UnownedWasmTypeDescription(common))
+                    }
+
+                    return nil
                 case .Abstract(let otherAbstract):
                     if let abstractSuper = desc.get()?.abstractHeapSupertype,
                         otherAbstract.subsumes(abstractSuper)
@@ -2216,6 +2335,8 @@ public enum Parameter: Hashable {
     case plain(ILType)
     case opt(ILType)
     case rest(ILType)
+    // A parameter that can be either one of two types (t1, t2).
+    case either(ILType, ILType)
 
     // Convenience constructors for plain parameters.
     public static let integer = Parameter.plain(.integer)
@@ -2226,6 +2347,8 @@ public enum Parameter: Hashable {
     public static let regexp = Parameter.plain(.regexp)
     public static let iterable = Parameter.plain(.iterable())
     public static let asyncIterable = Parameter.plain(.asyncIterable())
+    public static let disposable = Parameter.plain(.disposable())
+    public static let asyncDisposable = Parameter.plain(.asyncDisposable())
     public static let jsAnything = Parameter.plain(.jsAnything)
     public static let number = Parameter.plain(.number)
     public static let primitive = Parameter.plain(.primitive)
@@ -2264,6 +2387,9 @@ public enum Parameter: Hashable {
             return ".opt(\(t.format(abbreviate: abbreviate)))"
         case .rest(let t):
             return "\(t.format(abbreviate: abbreviate))..."
+        case .either(let t1, let t2):
+            return
+                ".either(\(t1.format(abbreviate: abbreviate)), \(t2.format(abbreviate: abbreviate)))"
         }
     }
 }
@@ -2295,9 +2421,13 @@ extension ParameterList {
             case .opt(let t):
                 assert(!t.Is(.nothing))
                 sawOptionals = true
+
+            // Optional parameters must not be followed by regular parameters.
             case .plain(let t):
                 assert(!t.Is(.nothing))
-                // Optional parameters must not be followed by regular parameters.
+                guard !sawOptionals else { return false }
+            case .either(let t1, let t2):
+                assert(!t1.Is(.nothing) && !t2.Is(.nothing))
                 guard !sawOptionals else { return false }
             }
         }
@@ -2466,8 +2596,18 @@ public struct Signature: Hashable, CustomStringConvertible {
             switch (p1, p2) {
             case (.plain(let t1), .plain(let t2)):
                 guard t2.subsumes(t1) else { return false }
+            case (.either(let t1, let t2), .plain(let t3)):
+                // `other` must handle both t1 and t2.
+                guard t3.subsumes(t1) && t3.subsumes(t2) else { return false }
+            case (.plain(let t1), .either(let t2, let t3)):
+                // `other` must handle t1 (by choosing either t2 or t3).
+                guard t2.subsumes(t1) || t3.subsumes(t1) else { return false }
+            case (.either(let t1, let t2), .either(let t3, let t4)):
+                // `other` must handle both t1 and t2.
+                guard (t3.subsumes(t1) || t4.subsumes(t1)) && (t3.subsumes(t2) || t4.subsumes(t2))
+                else { return false }
             default:
-                fatalError("All parameters must by now have been converted to plain parameters")
+                fatalError("Unexpected parameter types in subsumes: \(p1) and \(p2)")
             }
         }
 
@@ -2533,11 +2673,40 @@ class WasmTypeDescription: Hashable, CustomStringConvertible {
     // structs). It is nil for unresolved forward/self references for which the concrete abstract
     // super type is still undecided.
     public let abstractHeapSupertype: HeapTypeInfo?
+    public let concreteHeapSupertype: WasmTypeDescription?
+    public let isFinal: Bool
+
+    var supertypes: UnfoldFirstSequence<WasmTypeDescription> {
+        sequence(first: self, next: { $0.concreteHeapSupertype })
+    }
 
     // TODO(gc): We will also need to support subtyping of struct and array types at some point.
-    init(typeGroupIndex: Int, superType: HeapTypeInfo? = nil) {
+    init(
+        typeGroupIndex: Int, abstractHeapSupertype: HeapTypeInfo? = nil,
+        concreteHeapSupertype: WasmTypeDescription? = nil, isFinal: Bool = false
+    ) {
         self.typeGroupIndex = typeGroupIndex
-        self.abstractHeapSupertype = superType
+        self.abstractHeapSupertype = abstractHeapSupertype
+        self.concreteHeapSupertype = concreteHeapSupertype
+        self.isFinal = isFinal
+    }
+
+    func subsumes(_ other: WasmTypeDescription) -> Bool {
+        return other.supertypes.contains(self)
+    }
+
+    func union(_ other: WasmTypeDescription) -> WasmTypeDescription? {
+        return supertypes.first(where: { $0.subsumes(other) })
+    }
+
+    func intersection(_ other: WasmTypeDescription) -> WasmTypeDescription? {
+        if self.subsumes(other) {
+            return other
+        }
+        if other.subsumes(self) {
+            return self
+        }
+        return nil
     }
 
     static func == (lhs: WasmTypeDescription, rhs: WasmTypeDescription) -> Bool {
@@ -2552,11 +2721,15 @@ class WasmTypeDescription: Hashable, CustomStringConvertible {
         if self == .selfReference {
             return "selfReference"
         }
-        return "\(typeGroupIndex)"
+        return "\(isFinal ? "final " : "")\(typeGroupIndex)"
     }
 
     public var description: String {
         return format(abbreviate: false)
+    }
+
+    func hasUnresolvedSelfReferences() -> Bool {
+        fatalError("missing override in subtype")
     }
 }
 
@@ -2564,12 +2737,17 @@ class WasmSignatureTypeDescription: WasmTypeDescription {
     var signature: WasmSignature
     let isAdHoc: Bool
 
-    init(signature: WasmSignature, typeGroupIndex: Int, isAdHoc: Bool = false) {
+    init(
+        signature: WasmSignature, typeGroupIndex: Int, isAdHoc: Bool = false,
+        concreteHeapSupertype: WasmTypeDescription? = nil, isFinal: Bool = false
+    ) {
         self.signature = signature
         self.isAdHoc = isAdHoc
         // TODO(pawkra): support shared variant.
         super.init(
-            typeGroupIndex: typeGroupIndex, superType: HeapTypeInfo.init(.WasmFunc, shared: false))
+            typeGroupIndex: typeGroupIndex,
+            abstractHeapSupertype: HeapTypeInfo.init(.WasmFunc, shared: false),
+            concreteHeapSupertype: concreteHeapSupertype, isFinal: isFinal)
     }
 
     override func format(abbreviate: Bool) -> String {
@@ -2581,18 +2759,35 @@ class WasmSignatureTypeDescription: WasmTypeDescription {
         let outputTypes = signature.outputTypes.map { $0.abbreviated }.joined(separator: ", ")
         return "\(abbreviated)[[\(paramTypes)] => [\(outputTypes)]]"
     }
+
+    override func hasUnresolvedSelfReferences() -> Bool {
+        for type in signature.parameterTypes + signature.outputTypes {
+            if case .Index(let target) = type.wasmReferenceType?.kind {
+                if target.get() == .selfReference {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
 }
 
 class WasmArrayTypeDescription: WasmTypeDescription {
     var elementType: ILType
     let mutability: Bool
 
-    init(elementType: ILType, mutability: Bool, typeGroupIndex: Int) {
+    init(
+        elementType: ILType, mutability: Bool, typeGroupIndex: Int,
+        concreteHeapSupertype: WasmTypeDescription? = nil, isFinal: Bool = false
+    ) {
         self.elementType = elementType
         self.mutability = mutability
         // TODO(pawkra): support shared variant.
         super.init(
-            typeGroupIndex: typeGroupIndex, superType: HeapTypeInfo.init(.WasmArray, shared: false))
+            typeGroupIndex: typeGroupIndex,
+            abstractHeapSupertype: HeapTypeInfo.init(.WasmArray, shared: false),
+            concreteHeapSupertype: concreteHeapSupertype, isFinal: isFinal)
     }
 
     override func format(abbreviate: Bool) -> String {
@@ -2601,6 +2796,13 @@ class WasmArrayTypeDescription: WasmTypeDescription {
             return abbreviated
         }
         return "\(abbreviated)[\(mutability ? "mutable" : "immutable") \(elementType.abbreviated)]"
+    }
+
+    override func hasUnresolvedSelfReferences() -> Bool {
+        if case .Index(let target) = elementType.wasmReferenceType?.kind {
+            return target.get() == .selfReference
+        }
+        return false
     }
 }
 
@@ -2621,11 +2823,16 @@ class WasmStructTypeDescription: WasmTypeDescription {
 
     let fields: [Field]
 
-    init(fields: [Field], typeGroupIndex: Int) {
+    init(
+        fields: [Field], typeGroupIndex: Int, concreteHeapSupertype: WasmTypeDescription? = nil,
+        isFinal: Bool = false
+    ) {
         self.fields = fields
         // TODO(pawkra): support shared variant.
         super.init(
-            typeGroupIndex: typeGroupIndex, superType: HeapTypeInfo.init(.WasmStruct, shared: false)
+            typeGroupIndex: typeGroupIndex,
+            abstractHeapSupertype: HeapTypeInfo.init(.WasmStruct, shared: false),
+            concreteHeapSupertype: concreteHeapSupertype, isFinal: isFinal
         )
     }
 
@@ -2639,5 +2846,16 @@ class WasmStructTypeDescription: WasmTypeDescription {
             return abbreviated
         }
         return "\(abbreviated)[\(fields.map {$0.description}.joined(separator: ", "))]"
+    }
+
+    override func hasUnresolvedSelfReferences() -> Bool {
+        for field in fields {
+            if case .Index(let target) = field.type.wasmReferenceType?.kind {
+                if target.get() == .selfReference {
+                    return true
+                }
+            }
+        }
+        return false
     }
 }

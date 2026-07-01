@@ -46,6 +46,25 @@ public let WasmCodeGenerators: [CodeGenerator] = [
     },
 
     CodeGenerator(
+        "WasmTableGenerator",
+        inContext: .single(.javascript),
+        produces: [.object(ofGroup: "WasmTable")]
+    ) { b in
+        let elementType: ILType = chooseUniform(from: [
+            .wasmFuncRef(), .wasmExternRef(), .wasmI31Ref(), .wasmAnyRef(), .wasmEqRef(),
+            .wasmStructRef(), .wasmArrayRef(),
+        ])
+        let minSize = Int.random(in: 0..<100)
+        var maxSize: Int? = nil
+        if probability(0.5) {
+            maxSize = Int.random(in: minSize..<minSize + 1_000)
+        }
+        b.createWasmTable(
+            elementType: elementType, limits: Limits(min: minSize, max: maxSize),
+            isTable64: probability(0.5))
+    },
+
+    CodeGenerator(
         "WasmTagGenerator",
         inContext: .single(.javascript),
         produces: [.object(ofGroup: "WasmTag")]
@@ -332,6 +351,20 @@ public let WasmCodeGenerators: [CodeGenerator] = [
         inputs: .required(.wasmGenericRef)
     ) { b, ref in
         b.currentWasmModule.currentWasmFunction.wasmRefIsNull(ref)
+    },
+
+    CodeGenerator(
+        "WasmRefAsNonNullGenerator", inContext: .single(.wasmFunction),
+        inputs: .required(.wasmGenericRef)
+    ) { b, ref in
+        b.currentWasmModule.currentWasmFunction.wasmRefAsNonNull(ref)
+    },
+
+    CodeGenerator(
+        "WasmRefFuncGenerator", inContext: .single(.wasmFunction),
+        inputs: .required(.wasmFunctionDef())
+    ) { b, function in
+        b.currentWasmModule.currentWasmFunction.wasmRefFunc(function)
     },
 
     CodeGenerator(
@@ -818,7 +851,10 @@ public let WasmCodeGenerators: [CodeGenerator] = [
         // TODO(manoskouk): Generalize these.
         let minSize = 10
         let maxSize: Int? = nil
-        let elementType = ILType.wasmFuncRef()
+        // TODO(mliedtke): Support more types including index types.
+        let elementType = chooseUniform(from: [
+            ILType.wasmFuncRef(), ILType.wasmExternRef(), ILType.wasmI31Ref(),
+        ])
 
         let definedEntryIndices: [Int]
         var inputs: [Variable] = []
@@ -914,6 +950,40 @@ public let WasmCodeGenerators: [CodeGenerator] = [
     },
 
     CodeGenerator(
+        "WasmTableGetGenerator", inContext: .single(.wasmFunction),
+        inputs: .required(.object(ofGroup: "WasmTable"))
+    ) { b, table in
+        let tableType = b.type(of: table).wasmTableType!
+        let function = b.currentWasmModule.currentWasmFunction
+        let index = Int.random(in: 0...tableType.limits.min)
+        let indexVar =
+            tableType.isTable64
+            ? function.consti64(Int64(index))
+            : function.consti32(Int32(index))
+        function.wasmTableGet(tableRef: table, idx: indexVar)
+    },
+
+    CodeGenerator(
+        "WasmTableSetGenerator", inContext: .single(.wasmFunction),
+        inputs: .required(.object(ofGroup: "WasmTable"))
+    ) { b, table in
+        let tableType = b.type(of: table).wasmTableType!
+        let function = b.currentWasmModule.currentWasmFunction
+        let index = Int.random(in: 0...tableType.limits.min)
+        let indexVar =
+            tableType.isTable64
+            ? function.consti64(Int64(index))
+            : function.consti32(Int32(index))
+        guard
+            let value = b.randomVariable(ofType: tableType.elementType)
+                ?? function.generateRandomWasmVar(ofType: tableType.elementType)
+        else {
+            return
+        }
+        function.wasmTableSet(tableRef: table, idx: indexVar, to: value)
+    },
+
+    CodeGenerator(
         "WasmCallIndirectGenerator", inContext: .single(.wasmFunction),
         inputs: .required(.object(ofGroup: "WasmTable"))
     ) { b, table in
@@ -951,6 +1021,55 @@ public let WasmCodeGenerators: [CodeGenerator] = [
         function.wasmCallDirect(function: functionVar, functionArgs: functionArgs)
     },
 
+    CodeGenerator(
+        "WasmCallRefGenerator", inContext: .single(.wasmFunction),
+        inputs: .required(.wasmFunctionDef())
+    ) { b, functionVar in
+        let function = b.currentWasmModule.currentWasmFunction
+        let functionRef =
+            b.findVariable {
+                let varType = b.type(of: $0)
+                return varType.Is(.wasmFuncRef())
+                    && varType.Is(.wasmRef(.Index(), nullability: false))
+            } ?? function.wasmRefFunc(functionVar)
+
+        let signatureDef = b.getWasmTypeDef(for: b.type(of: functionRef))
+        let signature = b.type(of: signatureDef).wasmFunctionSignatureDefSignature
+
+        let functionArgs = b.randomWasmArguments(forWasmSignature: signature, generate: true)
+        guard let functionArgs else { return }
+        function.wasmCallRef(functionRef: functionRef, functionArgs: functionArgs)
+    },
+
+    CodeGenerator("WasmReturnCallRefGenerator", inContext: .single(.wasmFunction)) { b in
+        let function = b.currentWasmModule.currentWasmFunction
+        guard
+            let functionVar =
+                (b.findVariable { v in
+                    let type = b.type(of: v)
+                    return type.Is(.wasmFunctionDef())
+                        && type.wasmFunctionDefSignature!.outputTypes.count
+                            == function.signature.outputTypes.count
+                        && zip(
+                            function.signature.outputTypes,
+                            type.wasmFunctionDefSignature!.outputTypes
+                        ).allSatisfy { $0.subsumes($1) }
+                })
+        else { return }
+
+        let signatureType = b.type(of: functionVar).wasmFunctionDef!.signatureType!
+        let signatureDef = b.getWasmTypeDef(for: signatureType)
+        let typeDef = b.type(of: signatureDef).wasmTypeDefinition!
+
+        let refType = typeDef.getReferenceTypeTo(nullability: false)
+        let functionRef = b.randomVariable(ofType: refType) ?? function.wasmRefFunc(functionVar)
+
+        let signature = b.type(of: functionVar).wasmFunctionDefSignature!
+        let functionArgs = b.randomWasmArguments(forWasmSignature: signature, generate: true)
+        guard let functionArgs else { return }
+        function.wasmReturnCallRef(functionRef: functionRef, functionArgs: functionArgs)
+    },
+
     CodeGenerator("WasmReturnCallDirectGenerator", inContext: .single(.wasmFunction)) {
         b in
         let function = b.currentWasmModule.currentWasmFunction
@@ -959,8 +1078,12 @@ public let WasmCodeGenerators: [CodeGenerator] = [
                 (b.findVariable { v in
                     let type = b.type(of: v)
                     return type.Is(.wasmFunctionDef())
-                        && type.wasmFunctionDefSignature!.outputTypes
-                            == function.signature.outputTypes
+                        && function.signature.outputTypes.count
+                            == type.wasmFunctionDefSignature!.outputTypes.count
+                        && zip(
+                            function.signature.outputTypes,
+                            type.wasmFunctionDefSignature!.outputTypes
+                        ).allSatisfy { $0.subsumes($1) }
                 })
         else { return }
         let signature = b.type(of: functionVar).wasmFunctionDefSignature!
@@ -980,7 +1103,11 @@ public let WasmCodeGenerators: [CodeGenerator] = [
         let matchingIndices = tableType.knownEntrySignatures.enumerated().compactMap {
             (index, signatureDef) -> Int? in
             let wasmSignature = signatureDef.wasmFunctionSignatureDefSignature
-            return wasmSignature.outputTypes == function.signature.outputTypes ? index : nil
+            return
+                (function.signature.outputTypes.count == wasmSignature.outputTypes.count
+                && zip(function.signature.outputTypes, wasmSignature.outputTypes).allSatisfy {
+                    $0.subsumes($1)
+                }) ? index : nil
         }
 
         guard let tableIndex = matchingIndices.randomElement() else { return }
@@ -2347,6 +2474,48 @@ private let wasmArrayTypeGenerator = GeneratorStub(
     inContext: .single(.wasmTypeGroup),
     producesComplex: [.init(.wasmTypeDef(), .IsWasmArray)]
 ) { b in
+    let isFinal = probability(0.25)
+    // Define array type with super type (currently: super type and sub type have the same element type)
+    if probability(0.25),
+        // We avoid using super types with self-references to ensure programs are valid.
+        // To support this in the future, we need to replace the self-reference in the
+        // sub type with a reference to the super type.
+        let superType = b.findVariable(satisfying: {
+            if let desc = b.type(of: $0).wasmTypeDefinition?.description
+                as? WasmArrayTypeDescription
+            {
+                return !desc.hasUnresolvedSelfReferences() && !desc.isFinal
+            }
+            return false
+        })
+    {
+        let superTypeDesc =
+            b.type(of: superType).wasmTypeDefinition!.description
+            as! WasmArrayTypeDescription
+        let elementType = superTypeDesc.elementType
+
+        if case .Index(let target) = elementType.wasmReferenceType?.kind {
+            let indexType = b.getWasmTypeDef(for: elementType)
+            b.wasmDefineArrayType(
+                elementType: .wasmRef(
+                    .Index(), nullability: elementType.wasmReferenceType!.nullability),
+                mutability: superTypeDesc.mutability,
+                indexType: indexType,
+                superTypeDef: superType,
+                isFinal: isFinal
+            )
+        } else {
+            b.wasmDefineArrayType(
+                elementType: elementType,
+                mutability: superTypeDesc.mutability,
+                superTypeDef: superType,
+                isFinal: isFinal
+            )
+        }
+        return
+    }
+
+    // Define array type without super type
     let mutability = probability(0.75)
     if let elementType = b.randomWasmTypeDef(),
         probability(0.25)
@@ -2357,7 +2526,7 @@ private let wasmArrayTypeGenerator = GeneratorStub(
             == .selfReference || probability(0.5)
         b.wasmDefineArrayType(
             elementType: .wasmRef(.Index(), nullability: nullability),
-            mutability: mutability, indexType: elementType)
+            mutability: mutability, indexType: elementType, isFinal: isFinal)
     } else {
         b.wasmDefineArrayType(
             elementType: chooseUniform(
@@ -2368,7 +2537,7 @@ private let wasmArrayTypeGenerator = GeneratorStub(
                     + WasmAbstractHeapType.allCases.map {
                         ILType.wasmRef($0, nullability: Bool.random())
                     }),
-            mutability: mutability)
+            mutability: mutability, isFinal: isFinal)
     }
 }
 
@@ -2377,10 +2546,57 @@ private let wasmStructTypeGenerator = GeneratorStub(
     inContext: .single(.wasmTypeGroup),
     producesComplex: [.init(.wasmTypeDef(), .IsWasmStruct)]
 ) { b in
+    let isFinal = probability(0.25)
+    // Define struct type with super type (currently: super type and sub type have the same fields)
+    if probability(0.25),
+        // We avoid using super types with self-references to ensure programs are valid.
+        // To support this in the future, we need to replace the self-reference in the
+        // sub type with a reference to the super type.
+        // In the case of forward references, this requires more thought.
+        let superType = b.findVariable(satisfying: {
+            if let desc = b.type(of: $0).wasmTypeDefinition?.description
+                as? WasmStructTypeDescription
+            {
+                return !desc.hasUnresolvedSelfReferences() && !desc.isFinal
+            }
+            return false
+        })
+    {
+        let superTypeDesc =
+            b.type(of: superType).wasmTypeDefinition!.description
+            as! WasmStructTypeDescription
+        let fields = superTypeDesc.fields
 
+        var indexTypes: [Variable] = []
+        var cleanFields: [WasmStructTypeDescription.Field] = []
+        for field in fields {
+            if case .Index(let target) = field.type.wasmReferenceType?.kind {
+                let indexType = b.getWasmTypeDef(for: field.type)
+                indexTypes.append(indexType)
+                cleanFields.append(
+                    .init(
+                        type: .wasmRef(
+                            .Index(), nullability: field.type.wasmReferenceType!.nullability),
+                        mutability: field.mutability
+                    ))
+            } else {
+                cleanFields.append(field)
+            }
+        }
+
+        b.wasmDefineStructType(
+            fields: cleanFields,
+            indexTypes: indexTypes,
+            superTypeDef: superType,
+            isFinal: isFinal
+        )
+        return
+    }
+
+    // Define struct type without super type
     let (fields, indexTypes) = b.generateRandomWasmStructFields()
 
-    b.wasmDefineStructType(fields: fields, indexTypes: indexTypes)
+    b.wasmDefineStructType(fields: fields, indexTypes: indexTypes, isFinal: isFinal)
 }
 
 private let wasmSignatureTypeGenerator = GeneratorStub(
@@ -2388,13 +2604,54 @@ private let wasmSignatureTypeGenerator = GeneratorStub(
     inContext: .single(.wasmTypeGroup),
     producesComplex: [.init(.wasmTypeDef(), .IsWasmFunction)]
 ) { b in
+    let isFinal = probability(0.25)
+    // Define signature type with super type (currently: super type and sub type have the same signature)
+    if probability(0.25),
+        // We avoid using super types with self-references to ensure programs are valid.
+        let superType = b.findVariable(satisfying: {
+            if let desc = b.type(of: $0).wasmTypeDefinition?.description
+                as? WasmSignatureTypeDescription
+            {
+                return !desc.hasUnresolvedSelfReferences() && !desc.isFinal
+            }
+            return false
+        })
+    {
+        let superTypeDesc =
+            b.type(of: superType).wasmTypeDefinition!.description
+            as! WasmSignatureTypeDescription
+        let superSignature = superTypeDesc.signature
+
+        var indexTypes: [Variable] = []
+        let unlinkTypes = { (types: [ILType]) -> [ILType] in
+            return types.map { type in
+                if case .Index(let targetDescWrapper) = type.wasmReferenceType?.kind {
+                    let indexType = b.getWasmTypeDef(for: type)
+                    indexTypes.append(indexType)
+                    return .wasmRef(.Index(), nullability: type.wasmReferenceType!.nullability)
+                } else {
+                    return type
+                }
+            }
+        }
+
+        let unlinkedSignature =
+            unlinkTypes(superSignature.parameterTypes)
+            => unlinkTypes(superSignature.outputTypes)
+
+        b.wasmDefineSignatureType(
+            signature: unlinkedSignature, indexTypes: indexTypes,
+            superTypeDef: superType, isFinal: isFinal)
+        return
+    }
+
+    // Define signature type without super type
     let typeCount = Int.random(in: 0...10)
     let returnCount = Int.random(in: 0...typeCount)
     let parameterCount = typeCount - returnCount
 
     var indexTypes: [Variable] = []
     let chooseType = {
-        var type: ILType
         if let elementType = b.randomWasmTypeDef(),
             probability(0.25)
         {
@@ -2411,5 +2668,5 @@ private let wasmSignatureTypeGenerator = GeneratorStub(
     let signature =
         (0..<parameterCount).map { _ in chooseType() }
         => (0..<returnCount).map { _ in chooseType() }
-    b.wasmDefineSignatureType(signature: signature, indexTypes: indexTypes)
+    b.wasmDefineSignatureType(signature: signature, indexTypes: indexTypes, isFinal: isFinal)
 }

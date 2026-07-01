@@ -545,28 +545,19 @@ public class FuzzILLifter: Lifter {
         case .dup:
             w.emit("\(output()) <- Dup \(input(0))")
 
-        case .destructArray(let op):
+        case .destruct(let op):
             let outputs = instr.outputs.map(lift)
+            var inputIdx = 1
+            var outputIdx = 0
             w.emit(
-                "[\(liftArrayDestructPattern(indices: op.indices, outputs: outputs, hasRestElement: op.lastIsRest))] <- DestructArray \(input(0))"
+                "\(liftDestructuringPattern(op.pattern, isReassign: false, inputIdx: &inputIdx, outputIdx: &outputIdx, inputs: instr.inputs.map(lift), outputs: outputs)) <- Destruct \(input(0))"
             )
 
-        case .destructArrayAndReassign(let op):
-            let outputs = instr.inputs.dropFirst().map(lift)
+        case .destructAndReassign(let op):
+            var inputIdx = 1
+            var outputIdx = 0
             w.emit(
-                "[\(liftArrayDestructPattern(indices: op.indices, outputs: outputs, hasRestElement: op.lastIsRest))] <- DestructArrayAndReassign \(input(0))"
-            )
-
-        case .destructObject(let op):
-            let outputs = instr.outputs.map(lift)
-            w.emit(
-                "{\(liftObjectDestructPattern(properties: op.properties, outputs: outputs, hasRestElement: op.hasRestElement))} <- DestructObject \(input(0))"
-            )
-
-        case .destructObjectAndReassign(let op):
-            let outputs = instr.inputs.dropFirst().map(lift)
-            w.emit(
-                "{\(liftObjectDestructPattern(properties: op.properties, outputs: outputs, hasRestElement: op.hasRestElement))} <- DestructObjectAndReassign \(input(0))"
+                "\(liftDestructuringPattern(op.pattern, isReassign: true, inputIdx: &inputIdx, outputIdx: &outputIdx, inputs: instr.inputs.map(lift), outputs: [])) <- DestructAndReassign \(input(0))"
             )
 
         case .compare(let op):
@@ -735,20 +726,23 @@ public class FuzzILLifter: Lifter {
         case .beginForLoop(let op):
             let outputs = instr.innerOutputs.dropLast().map(lift)
             let label = lift(instr.innerOutputs.last!)
-            let line = "BeginForLoop type='\(op.type)' async='\(op.isAsync)'"
+            var line = "BeginForLoop type='\(op.type)' async='\(op.isAsync)'"
+            if op.usingType != .none {
+                line += " usingType='\(op.usingType)'"
+            }
 
             switch op.header {
             case .simple:
                 let allOutputs = instr.innerOutputs.map(lift).joined(separator: ", ")
                 w.emit("\(line) \(input(0)) -> \(allOutputs)")
-            case .arrayDestruct(let indices, let hasRest):
-                let pattern =
-                    " -> [\(liftArrayDestructPattern(indices: indices, outputs: outputs, hasRestElement: hasRest))], \(label)"
-                w.emit("\(line) \(input(0))\(pattern)")
-            case .objectDestruct(let properties, let hasRest):
-                let pattern =
-                    " -> {\(liftObjectDestructPattern(properties: properties, outputs: outputs, hasRestElement: hasRest))}, \(label)"
-                w.emit("\(line) \(input(0))\(pattern)")
+            case .destruct(let pattern):
+                var nextInputIndex = 1
+                var nextOutputIndex = 0
+                let patStr = liftDestructuringPattern(
+                    pattern, isReassign: false,
+                    inputIdx: &nextInputIndex, outputIdx: &nextOutputIndex,
+                    inputs: instr.inputs.map(lift), outputs: outputs)
+                w.emit("\(line) \(input(0)) -> \(patStr), \(label)")
             }
             w.increaseIndentionLevel()
 
@@ -837,6 +831,19 @@ public class FuzzILLifter: Lifter {
             w.decreaseIndentionLevel()
             w.emit("\(output()) <- EndBundleModule '\(op.moduleName)'")
 
+        case .declarePendingBundleModule(let op):
+            w.emit(
+                "\(output()) <- DeclarePendingBundleModule '\(op.moduleName)' exports: \(op.exportNames)"
+            )
+
+        case .beginPendingBundleModule:
+            w.emit("BeginPendingBundleModule \(input(0))")
+            w.increaseIndentionLevel()
+
+        case .endPendingBundleModule:
+            w.decreaseIndentionLevel()
+            w.emit("EndPendingBundleModule")
+
         case .beginBundleModuleEntryPoint:
             w.emit("BeginBundleModuleEntryPoint")
             w.increaseIndentionLevel()
@@ -859,8 +866,12 @@ public class FuzzILLifter: Lifter {
             w.emit("\(outputs) <- ImportVariables \(input(0)), [\(names)]")
 
         case .importNamespace(let op):
-            let deferKeyword = op.isDeferred ? "defer " : ""
-            w.emit("\(output()) <- ImportNamespace \(deferKeyword)\(input(0))")
+            let deferKeyword = op.isDeferred ? "Deferred" : ""
+            w.emit("\(output()) <- \(deferKeyword)ImportNamespace \(input(0))")
+
+        case .dynamicImport(let op):
+            let deferKeyword = op.isDeferred ? "Deferred" : ""
+            w.emit("\(output()) <- \(deferKeyword)DynamicImport \(input(0))")
 
         case .loadNewTarget:
             w.emit("\(output()) <- LoadNewTarget")
@@ -975,8 +986,8 @@ public class FuzzILLifter: Lifter {
         case .wasmLoadGlobal(_):
             w.emit("\(output()) <- WasmLoadGlobal \(input(0))")
 
-        case .wasmTableGet(_):
-            w.emit("\(output()) <- WasmTableGet \(input(0))[\(input(1))]")
+        case .wasmTableGet(let op):
+            w.emit("\(output()) <- WasmTableGet \(op.elementType) \(input(0))[\(input(1))]")
 
         case .wasmTableSet(_):
             w.emit("WasmTabletSet \(input(0))[\(input(1))] <- \(input(2))")
@@ -1218,6 +1229,19 @@ public class FuzzILLifter: Lifter {
                 let outputs = instr.outputs.map(lift).joined(separator: ", ")
                 w.emit("\(outputs) <- WasmCallDirect \(inputs)")
             }
+
+        case .wasmCallRef(_):
+            let inputs = instr.inputs.map(lift).joined(separator: ", ")
+            if instr.outputs.isEmpty {
+                w.emit("WasmCallRef \(inputs)")
+            } else {
+                let outputs = instr.outputs.map(lift).joined(separator: ", ")
+                w.emit("\(outputs) <- WasmCallRef \(inputs)")
+            }
+
+        case .wasmReturnCallRef(_):
+            let inputs = instr.inputs.map(lift).joined(separator: ", ")
+            w.emit("WasmReturnCallRef \(inputs)")
 
         case .wasmReturnCallDirect(_):
             let inputs = instr.inputs.map(lift).joined(separator: ", ")
@@ -1572,6 +1596,12 @@ public class FuzzILLifter: Lifter {
         case .wasmRefIsNull(_):
             w.emit("\(output()) <- WasmRefIsNull \(input(0))")
 
+        case .wasmRefAsNonNull(_):
+            w.emit("\(output()) <- WasmRefAsNonNull \(input(0))")
+
+        case .wasmRefFunc(_):
+            w.emit("\(output()) <- WasmRefFunc \(input(0))")
+
         case .wasmRefEq(_):
             w.emit("\(output()) <- WasmRefEq \(input(0)) \(input(1))")
 
@@ -1606,8 +1636,12 @@ public class FuzzILLifter: Lifter {
             w.emit("\(outputs) <- WasmEndTypeGroup [\(inputs)]")
 
         case .wasmDefineSignatureType(let op):
-            let inputs = instr.inputs.map(lift).joined(separator: ", ")
-            w.emit("\(output()) <- WasmDefineSignatureType(\(op.signature)) [\(inputs)]")
+            let superTypeInput = op.hasSuperType ? " superType=\(lift(instr.inputs.first!))" : ""
+            let sigInputs = (op.hasSuperType ? instr.inputs.dropFirst() : instr.inputs).map(lift)
+                .joined(separator: ", ")
+            w.emit(
+                "\(output()) <- WasmDefineSignatureType(\(op.signature))\(superTypeInput) isFinal=\(op.isFinal) [\(sigInputs)]"
+            )
 
         case .wasmDefineAdHocSignatureType(let op):
             let inputs = instr.inputs.map(lift).joined(separator: ", ")
@@ -1618,22 +1652,31 @@ public class FuzzILLifter: Lifter {
             w.emit("\(output()) <- WasmDefineAdHocModuleSignatureType(\(op.signature)) [\(inputs)]")
 
         case .wasmDefineArrayType(let op):
-            let typeInput = op.elementType.requiredInputCount() == 1 ? " \(input(0))" : ""
+            let superTypeInput = op.hasSuperType ? " superType=\(lift(instr.inputs.first!))" : ""
+            let typeInput =
+                op.elementType.requiredInputCount() == 1 ? " \(lift(instr.inputs.last!))" : ""
             w.emit(
-                "\(output()) <- WasmDefineArrayType \(op.elementType) mutability=\(op.mutability)\(typeInput)"
+                "\(output()) <- WasmDefineArrayType \(op.elementType) mutability=\(op.mutability)\(superTypeInput) isFinal=\(op.isFinal)\(typeInput)"
             )
 
         case .wasmDefineStructType(let op):
             let fields = op.fields.map { "\($0.type) mutability=\($0.mutability)" }.joined(
                 separator: ", ")
-            let inputs = instr.inputs.map(lift).joined(separator: ", ")
-            w.emit("\(output()) <- WasmDefineStructType(\(fields)) [\(inputs)]")
+            let superTypeInput = op.hasSuperType ? " superType=\(lift(instr.inputs.first!))" : ""
+            let structInputs = (op.hasSuperType ? instr.inputs.dropFirst() : instr.inputs).map(lift)
+                .joined(separator: ", ")
+            w.emit(
+                "\(output()) <- WasmDefineStructType(\(fields))\(superTypeInput) isFinal=\(op.isFinal) [\(structInputs)]"
+            )
 
         case .wasmDefineForwardOrSelfReference(_):
             w.emit("\(output()) <- WasmDefineForwardOrSelfReference")
 
         case .wasmResolveForwardReference(_):
             w.emit("WasmResolveForwardReference [\(input(0)) => \(input(1))]")
+
+        case .rawWasmModule(let op):
+            w.emit("\(output()) <- RawWasmModule [\(op.bytes.count) bytes]")
 
         default:
             fatalError("No FuzzIL lifting for this operation!")
@@ -1721,5 +1764,116 @@ public class FuzzILLifter: Lifter {
         }
 
         return objectPattern
+    }
+
+    private func liftDestructuringTarget(
+        _ target: DestructuringPattern.Target, isReassign: Bool,
+        inputIdx: inout Int, outputIdx: inout Int,
+        inputs: [String], outputs: [String]
+    ) -> String {
+        switch target {
+        case .flatBinding:
+            let propertyName = isReassign ? inputs[inputIdx] : outputs[outputIdx]
+            if isReassign { inputIdx += 1 } else { outputIdx += 1 }
+            return propertyName
+        case .pattern(let p):
+            return liftDestructuringPattern(
+                p, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                inputs: inputs, outputs: outputs)
+        case .property(let propertyName):
+            let obj = inputs[inputIdx]
+            inputIdx += 1
+            return "\(obj).\(propertyName)"
+        case .element(let index):
+            let obj = inputs[inputIdx]
+            inputIdx += 1
+            return "\(obj)[\(index)]"
+        case .computedProperty:
+            let obj = inputs[inputIdx]
+            inputIdx += 1
+            let key = inputs[inputIdx]
+            inputIdx += 1
+            return "\(obj)[\(key)]"
+        case .superProperty(let propertyName):
+            return "super.\(propertyName)"
+        case .superElement(let index):
+            return "super[\(index)]"
+        case .superComputedProperty:
+            let key = inputs[inputIdx]
+            inputIdx += 1
+            return "super[\(key)]"
+        }
+    }
+
+    private func liftDestructuringPattern(
+        _ pattern: DestructuringPattern, isReassign: Bool,
+        inputIdx: inout Int, outputIdx: inout Int,
+        inputs: [String], outputs: [String]
+    ) -> String {
+        switch pattern {
+        case .object(let obj):
+            var props = [String]()
+            for prop in obj.properties {
+                var keyStr = ""
+                switch prop.key {
+                case .string(let s): keyStr = "\"\(s)\""
+                case .computed:
+                    keyStr = "[\(inputs[inputIdx])]"
+                    inputIdx += 1
+                }
+
+                let targetStr = liftDestructuringTarget(
+                    prop.target, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                    inputs: inputs, outputs: outputs)
+
+                var defStr = ""
+                if prop.hasDefaultValue {
+                    defStr = " = \(inputs[inputIdx])"
+                    inputIdx += 1
+                }
+
+                props.append("\(keyStr): \(targetStr)\(defStr)")
+            }
+            if obj.hasRestElement {
+                let targetStr =
+                    isReassign ? inputs[inputIdx] : outputs[outputIdx]
+                if isReassign { inputIdx += 1 } else { outputIdx += 1 }
+                props.append("...\(targetStr)")
+            }
+            return "{\(props.joined(separator: ", "))}"
+
+        case .array(let arr):
+            var elems = [String]()
+            for elem in arr.elements {
+                if let target = elem.target {
+                    let targetStr = liftDestructuringTarget(
+                        target, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                        inputs: inputs, outputs: outputs)
+                    if elem.hasDefaultValue {
+                        elems.append(
+                            "\(targetStr)=\(inputs[inputIdx])")
+                        inputIdx += 1
+                    } else {
+                        elems.append(targetStr)
+                    }
+                } else {
+                    assert(!elem.hasDefaultValue)
+                    elems.append("")
+                }
+            }
+            if let restTarget = arr.restTarget {
+                let targetStr = liftDestructuringTarget(
+                    restTarget, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
+                    inputs: inputs, outputs: outputs)
+                elems.append("...\(targetStr)")
+            }
+            if let last = arr.elements.last, last.target == nil, arr.restTarget == nil {
+                // In JavaScript, a single trailing comma in an array destructuring pattern (e.g. `[x, ]`)
+                // is ignored, resulting in a pattern of length 1. To represent an actual elision at
+                // the very end (length 2), we must emit `[x, ,]`. Hence the extra empty element.
+                elems.append("")
+            }
+            return "[\(elems.joined(separator: ", "))]"
+        }
     }
 }

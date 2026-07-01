@@ -133,6 +133,19 @@ public class ProgramBuilder {
 
     private var activeJsModuleName: String? = nil
 
+    public func generatePendingModuleExports(moduleVariable: Variable) {
+        // Retrieve the exports from the type of the module variable.
+        let type = jsTyper.type(of: moduleVariable)
+
+        var exportNames: [String] = []
+        var varsToExport: [Variable] = []
+        type.exports.forEach { exportName, _ in
+            exportNames.append(exportName)
+            varsToExport.append(randomJsVariable())
+        }
+        exportVariables(variables: varsToExport, exportNames: exportNames)
+    }
+
     /// Stack of active class definitions.
     ///
     /// Similar to object literals, class definitions can be nested so this needs to be a stack.
@@ -234,6 +247,7 @@ public class ProgramBuilder {
         activeClassDefinitions.removeAll()
         activeSwitchBlocks.removeAll()
         activeWasmModule = nil
+        activeJsModuleName = nil
         argumentGenerationSignature.removeAll()
         argumentGenerationVariableBudget.removeAll()
         buildLog?.reset()
@@ -511,6 +525,22 @@ public class ProgramBuilder {
         return chooseUniform(from: fuzzer.environment.customProperties)
     }
 
+    /// Returns a random custom identifier name.
+    public func randomCustomIdentifierName() -> String {
+        return chooseUniform(from: fuzzer.environment.customIdentifiers)
+    }
+
+    /// Returns a random identifier name.
+    public func randomIdentifierName() -> String {
+        if probability(0.5) {
+            let name = randomBuiltinPropertyName()
+            if fuzzer.environment.isValidDotNotationName(name) {
+                return name
+            }
+        }
+        return randomCustomIdentifierName()
+    }
+
     /// Returns either a builtin or a custom property name, with equal probability.
     public func randomPropertyName() -> String {
         return probability(0.5) ? randomBuiltinPropertyName() : randomCustomPropertyName()
@@ -696,6 +726,9 @@ public class ProgramBuilder {
                 for _ in 0...Int.random(in: 1...3) {
                     args.append(generateTypeInternal(t))
                 }
+            case .either(let t1, let t2):
+                let chosenType = probability(0.5) ? t1 : t2
+                args.append(generateTypeInternal(chosenType))
             }
         }
 
@@ -857,7 +890,7 @@ public class ProgramBuilder {
                             produces.type.Is(.wasmTypeDef())
                         }
                     }
-                    let _ = self.complete(generator: generators.randomElement(), withBudget: 5)
+                    let _ = self.complete(generator: generators.randomElement()!, withBudget: 5)
                     return self.randomVariable(ofType: .wasmTypeDef())!
                 },
             .object():
@@ -940,7 +973,7 @@ public class ProgramBuilder {
                     })
 
                     func useGenerator() -> Variable {
-                        let generator = generators.randomElement()
+                        let generator = generators.randomElement()!
                         let _ = self.complete(generator: generator, withBudget: 10)
                         guard let variable = self.randomVariable(ofTypeOrSubtype: type) else {
                             fatalError(
@@ -1064,7 +1097,7 @@ public class ProgramBuilder {
     /// 0.5, then 50% of the time we'll first try to find an exact match (`type(of: result).Is(requestedType)`) before trying the
     /// more general search (`type(of: result).MayBe(requestedType)`) which also includes variables of unknown type.
     /// This is writable for use in tests, but it could also be used to change how "conservative" variable selection is.
-    var probabilityOfVariableSelectionTryingToFindAnExactMatch = 0.5
+    var probabilityOfVariableSelectionTryingToFindAnExactMatch = 0.8
 
     /// Returns a random variable to be used as the given type.
     ///
@@ -1480,17 +1513,17 @@ public class ProgramBuilder {
             return .jsAnything
         } else if type.Is(.nothing) {
             return .undefined
-        } else if type.Is(.wasmFuncRef()) {
-            // TODO(cffsmith): refine this type with the signature if we can.
-            return .function()
-        } else if type.Is(.wasmI31Ref()) {
-            return .integer
         } else if type.Is(.wasmNullRef()) || type.Is(.wasmNullExternRef())
             || type.Is(.wasmNullFuncRef())
         {
             // This is slightly imprecise: The null types only accept null, not undefined but
             // Fuzzilli doesn't differentiate between null and undefined in its type system.
             return .nullish
+        } else if type.Is(.wasmFuncRef()) {
+            // TODO(cffsmith): refine this type with the signature if we can.
+            return .function()
+        } else if type.Is(.wasmI31Ref()) {
+            return .integer
         } else if type.Is(.wasmGenericRef) {
             return .jsAnything
         } else {
@@ -1505,7 +1538,7 @@ public class ProgramBuilder {
         let matchingTypes = matchingWasmTypes(jsType: type)
         let intersection = availableTypes.filter({ type in matchingTypes.contains(type) })
         return intersection.count != 0
-            ? intersection.randomElement() : availableTypes.randomElement()
+            ? intersection.randomElement()! : availableTypes.randomElement()!
     }
 
     /// Type information access.
@@ -1565,6 +1598,8 @@ public class ProgramBuilder {
                 fallthrough
             case .plain(let t):
                 argumentTypes.append(t)
+            case .either(let t1, let t2):
+                argumentTypes.append(probability(0.5) ? t1 : t2)
             }
         }
 
@@ -1586,6 +1621,8 @@ public class ProgramBuilder {
                 return argumentTypes
             case .plain(let t):
                 argumentTypes.append(t)
+            case .either(let t1, _):
+                argumentTypes.append(t1)
             }
         }
 
@@ -2187,7 +2224,7 @@ public class ProgramBuilder {
                         })
 
                         assert(!possibleGenerators.isEmpty)
-                        let randomGenerator = possibleGenerators.randomElement()
+                        let randomGenerator = possibleGenerators.randomElement()!
                         // After having picked a generator, we might need to nest it in other generators that provide the necessary contexts.
                         generator = assembleSyntheticGenerator(for: randomGenerator)
                         counter += 1
@@ -2270,7 +2307,7 @@ public class ProgramBuilder {
 
         while numberOfVisibleVariables - previousNumberOfVisibleVariables < n {
 
-            let generator = valueGenerators.randomElement()
+            let generator = valueGenerators.randomElement()!
 
             // Just fully run the generator without yielding back.
             // Think about changing this and calling into the higher level build logic?
@@ -2502,7 +2539,7 @@ public class ProgramBuilder {
                     continue
                 }
 
-                let generator = usableGenerators.randomElement()
+                let generator = usableGenerators.randomElement()!
                 let _ = complete(generator: generator, withBudget: 5)
             }
         }
@@ -3811,42 +3848,88 @@ public class ProgramBuilder {
     }
 
     @discardableResult
+    public func destruct(
+        _ input: Variable, using pattern: DestructuringPattern, defaultValues: [Variable] = []
+    ) -> [Variable] {
+        let op = Destruct(
+            pattern: pattern, numInputs: 1 + defaultValues.count,
+            numOutputs: pattern.numBindings)
+        let outputs = emit(op, withInputs: [input] + defaultValues).outputs
+        return Array(outputs)
+    }
+
+    public func destruct(
+        _ input: Variable, using pattern: DestructuringPattern, into outputs: [Variable],
+        defaultValues: [Variable] = []
+    ) {
+        let op = DestructAndReassign(
+            pattern: pattern, numInputs: 1 + defaultValues.count + outputs.count)
+        emit(op, withInputs: [input] + defaultValues + outputs)
+    }
+
+    private func buildArrayPattern(selecting indices: [Int64], lastIsRest: Bool)
+        -> DestructuringPattern
+    {
+        var elements: [DestructuringPattern.ArrayElement] = []
+        let sortedIndices = indices.sorted()
+        var currentIndex: Int64 = 0
+        for idx in sortedIndices {
+            assert(
+                idx >= currentIndex,
+                "Indices must be non-negative and strictly ascending without duplicates")
+            while currentIndex < idx {
+                elements.append(.init(target: .none))  // elision
+                currentIndex += 1
+            }
+            if lastIsRest && idx == sortedIndices.last! {
+                break
+            }
+            elements.append(.init(target: .flatBinding))
+            currentIndex += 1
+        }
+        let restTarget =
+            (lastIsRest && !sortedIndices.isEmpty) ? DestructuringPattern.Target.flatBinding : nil
+
+        return .array(.init(elements: elements, restTarget: restTarget))
+    }
+
+    @discardableResult
     public func destruct(_ input: Variable, selecting indices: [Int64], lastIsRest: Bool = false)
         -> [Variable]
     {
-        let outputs = emit(
-            DestructArray(indices: indices, lastIsRest: lastIsRest), withInputs: [input]
-        ).outputs
-        return Array(outputs)
+        return destruct(input, using: buildArrayPattern(selecting: indices, lastIsRest: lastIsRest))
     }
 
     public func destruct(
         _ input: Variable, selecting indices: [Int64], into outputs: [Variable],
         lastIsRest: Bool = false
     ) {
-        emit(
-            DestructArrayAndReassign(indices: indices, lastIsRest: lastIsRest),
-            withInputs: [input] + outputs)
+        destruct(
+            input, using: buildArrayPattern(selecting: indices, lastIsRest: lastIsRest),
+            into: outputs)
     }
 
     @discardableResult
     public func destruct(
         _ input: Variable, selecting properties: [String], hasRestElement: Bool = false
     ) -> [Variable] {
-        let outputs = emit(
-            DestructObject(properties: properties, hasRestElement: hasRestElement),
-            withInputs: [input]
-        ).outputs
-        return Array(outputs)
+        let props = properties.map {
+            DestructuringPattern.ObjectProperty(key: .string($0), target: .flatBinding)
+        }
+        return destruct(
+            input, using: .object(.init(properties: props, hasRestElement: hasRestElement)))
     }
 
     public func destruct(
         _ input: Variable, selecting properties: [String], into outputs: [Variable],
         hasRestElement: Bool = false
     ) {
-        emit(
-            DestructObjectAndReassign(properties: properties, hasRestElement: hasRestElement),
-            withInputs: [input] + outputs)
+        let props = properties.map {
+            DestructuringPattern.ObjectProperty(key: .string($0), target: .flatBinding)
+        }
+        destruct(
+            input, using: .object(.init(properties: props, hasRestElement: hasRestElement)),
+            into: outputs)
     }
 
     @discardableResult
@@ -4124,10 +4207,11 @@ public class ProgramBuilder {
         _ obj: Variable,
         type: ForInOfLoopType,
         isAsync: Bool,
+        usingType: UsingType = .none,
         header: LoopHeader,
         _ body: ([Variable], Variable) -> Void
     ) {
-        let beginOp = ForLoop(type: type, isAsync: isAsync, header: header)
+        let beginOp = ForLoop(type: type, isAsync: isAsync, usingType: usingType, header: header)
         let instr = emit(beginOp, withInputs: [obj])
         let label = instr.innerOutputs.last!
         let vars = instr.innerOutputs.dropLast()
@@ -4208,6 +4292,24 @@ public class ProgramBuilder {
         buildBlockStatement { _ in body() }
     }
 
+    public func buildBundleModule(name: String, _ body: () -> Void) -> Variable {
+        beginBundleModule(name: name)
+        body()
+        return endBundleModule()
+    }
+
+    public func buildBundleModuleEntryPoint(_ body: () -> Void) {
+        beginBundleModuleEntryPoint()
+        body()
+        endBundleModuleEntryPoint()
+    }
+
+    public func buildPendingBundleModule(moduleVariable: Variable, _ body: () -> Void) {
+        beginPendingBundleModule(moduleVariable: moduleVariable)
+        body()
+        endPendingBundleModule()
+    }
+
     public func beginBundleModule(name: String) {
         activeJsModuleName = name
         emit(BeginBundleModule(moduleName: name))
@@ -4217,6 +4319,18 @@ public class ProgramBuilder {
         let endModuleInstruction = emit(EndBundleModule(moduleName: activeJsModuleName!))
         activeJsModuleName = nil
         return endModuleInstruction.output
+    }
+
+    public func declarePendingBundleModule(name: String, exportNames: [String]) -> Variable {
+        return emit(DeclarePendingBundleModule(moduleName: name, exportNames: exportNames)).output
+    }
+
+    public func beginPendingBundleModule(moduleVariable: Variable) {
+        emit(BeginPendingBundleModule(), withInputs: [moduleVariable])
+    }
+
+    public func endPendingBundleModule() {
+        emit(EndPendingBundleModule())
     }
 
     public func beginBundleModuleEntryPoint() {
@@ -4258,12 +4372,6 @@ public class ProgramBuilder {
         }
     }
 
-    public func generateNamespaceImport() {
-        if let module = randomVariable(ofType: .jsModule()) {
-            importNamespace(module: module, isDeferred: probability(0.5))
-        }
-    }
-
     public func exportVariables(variables: [Variable], exportNames: [String]) {
         assert(variables.count == exportNames.count)
         emit(ExportVariables(exportNames: exportNames), withInputs: variables)
@@ -4276,6 +4384,11 @@ public class ProgramBuilder {
     @discardableResult
     public func importNamespace(module: Variable, isDeferred: Bool) -> Instruction {
         return emit(ImportNamespace(isDeferred: isDeferred), withInputs: [module])
+    }
+
+    @discardableResult
+    public func dynamicImport(_ module: Variable, isDeferred: Bool = false) -> Variable {
+        return emit(DynamicImport(isDeferred: isDeferred), withInputs: [module]).output
     }
 
     public func blockBreak(_ label: Variable) {
@@ -4314,6 +4427,7 @@ public class ProgramBuilder {
         ).output
     }
 
+    @discardableResult
     public func createWasmTable(elementType: ILType, limits: Limits, isTable64: Bool) -> Variable {
         return emit(CreateWasmTable(elementType: elementType, limits: limits, isTable64: isTable64))
             .output
@@ -4697,7 +4811,8 @@ public class ProgramBuilder {
             let tableType = b.type(of: tableRef)
             let offsetType = tableType.wasmTableType!.isTable64 ? ILType.wasmi64 : ILType.wasmi32
             return b.emit(
-                WasmTableGet(), withInputs: [tableRef, idx], types: [tableType, offsetType]
+                WasmTableGet(elementType: tableType.wasmTableType!.elementType),
+                withInputs: [tableRef, idx], types: [tableType, offsetType]
             ).output
         }
 
@@ -4769,9 +4884,45 @@ public class ProgramBuilder {
                 ).outputs)
         }
 
+        @discardableResult
+        public func wasmCallRef(
+            functionRef: Variable, functionArgs: [Variable]
+        ) -> [Variable] {
+            let signatureDef = b.getWasmTypeDef(for: b.type(of: functionRef))
+            let signature = b.type(of: signatureDef).wasmFunctionSignatureDefSignature
+            return Array(
+                b.emit(
+                    WasmCallRef(
+                        parameterCount: signature.parameterTypes.count,
+                        outputCount: signature.outputTypes.count),
+                    withInputs: functionArgs + [functionRef],
+                    types: signature.parameterTypes + [.wasmFuncRef()]
+                ).outputs)
+        }
+
+        public func wasmReturnCallRef(
+            functionRef: Variable, functionArgs: [Variable]
+        ) {
+            let signatureDef = b.getWasmTypeDef(for: b.type(of: functionRef))
+            let signature = b.type(of: signatureDef).wasmFunctionSignatureDefSignature
+            assert(
+                self.signature.outputTypes.count == signature.outputTypes.count
+                    && zip(self.signature.outputTypes, signature.outputTypes).allSatisfy {
+                        $0.subsumes($1)
+                    })
+            b.emit(
+                WasmReturnCallRef(parameterCount: signature.parameterTypes.count),
+                withInputs: functionArgs + [functionRef],
+                types: signature.parameterTypes + [.wasmFuncRef()])
+        }
+
         public func wasmReturnCallDirect(function: Variable, functionArgs: [Variable]) {
             let signature = b.type(of: function).wasmFunctionDefSignature!
-            assert(self.signature.outputTypes == signature.outputTypes)
+            assert(
+                self.signature.outputTypes.count == signature.outputTypes.count
+                    && zip(self.signature.outputTypes, signature.outputTypes).allSatisfy {
+                        $0.subsumes($1)
+                    })
             b.emit(
                 WasmReturnCallDirect(parameterCount: signature.parameterTypes.count),
                 withInputs: [function] + functionArgs,
@@ -4783,7 +4934,11 @@ public class ProgramBuilder {
         ) {
             let signature = b.type(of: signatureDef).wasmFunctionSignatureDefSignature
             let isTable64 = b.type(of: table).wasmTableType!.isTable64
-            assert(self.signature.outputTypes == signature.outputTypes)
+            assert(
+                self.signature.outputTypes.count == signature.outputTypes.count
+                    && zip(self.signature.outputTypes, signature.outputTypes).allSatisfy {
+                        $0.subsumes($1)
+                    })
             b.emit(
                 WasmReturnCallIndirect(parameterCount: signature.parameterTypes.count),
                 withInputs: [table, signatureDef] + functionArgs + [tableIndex],
@@ -5511,6 +5666,22 @@ public class ProgramBuilder {
                                         }
                                     }
                                 ),
+                                (
+                                    .wasmRefExtern(),
+                                    {
+                                        let i31 = self.wasmRefI31(
+                                            self.consti32(
+                                                Int32(truncatingIfNeeded: self.b.randomInt())))
+                                        return self.wasmExternConvertAny(i31)
+                                    }
+                                ),
+                                (
+                                    .wasmRefFunc(),
+                                    {
+                                        self.b.randomVariable(ofType: .wasmFunctionDef()).flatMap(
+                                            self.wasmRefFunc)
+                                    }
+                                ),
                             ]
                             // Note that for a type like eqref there are multiple valid options.
                             let options = allOptions.filter { $0.0.Is(type) }.map { $0.1 }
@@ -5540,11 +5711,22 @@ public class ProgramBuilder {
                                 return wasmStructNewDefault(
                                     structType: b.jsTyper.getWasmTypeDef(for: type))
                             }
+                            if abstractSuper == .WasmFunc {
+                                let signatureType = b.type(of: b.jsTyper.getWasmTypeDef(for: type))
+                                if let f =
+                                    (b.findVariable {
+                                        b.type(of: $0).wasmFunctionDef?.signatureType
+                                            == signatureType
+                                    })
+                                {
+                                    return wasmRefFunc(f)
+                                }
+                            }
                         }
                         if nullable {
                             return wasmRefNull(typeDef: b.jsTyper.getWasmTypeDef(for: type))
                         }
-                    case .none:
+                    case nil:
                         break
                     }
                 }
@@ -5552,8 +5734,12 @@ public class ProgramBuilder {
             }
         }
 
+        public func tryFindOrGenerateWasmVar(ofType type: ILType) -> Variable? {
+            b.randomVariable(ofType: type) ?? generateRandomWasmVar(ofType: type)
+        }
+
         public func findOrGenerateWasmVar(ofType type: ILType) -> Variable {
-            if let result = b.randomVariable(ofType: type) ?? generateRandomWasmVar(ofType: type) {
+            if let result = tryFindOrGenerateWasmVar(ofType: type) {
                 return result
             }
             fatalError("Could not find or generate wasm variable of type \(type)")
@@ -5865,6 +6051,16 @@ public class ProgramBuilder {
         @discardableResult
         public func wasmRefIsNull(_ ref: Variable) -> Variable {
             return b.emit(WasmRefIsNull(), withInputs: [ref], types: [.wasmGenericRef]).output
+        }
+
+        @discardableResult
+        public func wasmRefAsNonNull(_ ref: Variable) -> Variable {
+            return b.emit(WasmRefAsNonNull(), withInputs: [ref], types: [.wasmGenericRef]).output
+        }
+
+        @discardableResult
+        public func wasmRefFunc(_ function: Variable) -> Variable {
+            return b.emit(WasmRefFunc(), withInputs: [function], types: [.wasmFunctionDef()]).output
         }
 
         @discardableResult
@@ -6349,8 +6545,69 @@ public class ProgramBuilder {
     }
 
     @discardableResult
-    func wasmDefineSignatureType(signature: WasmSignature, indexTypes: [Variable]) -> Variable {
-        return emit(WasmDefineSignatureType(signature: signature), withInputs: indexTypes).output
+    func wasmDefineSignatureType(
+        signature: WasmSignature, indexTypes: [Variable],
+        superTypeDef: Variable? = nil, isFinal: Bool = false
+    ) -> Variable {
+        var inputs: [Variable] = []
+        if let superTypeDef {
+            #if DEBUG
+                let superTypeDesc = type(of: superTypeDef).wasmTypeDefinition?.description
+                assert(
+                    superTypeDesc != .selfReference,
+                    "Supertype cannot be a forward or self-reference")
+                guard let superSigType = superTypeDesc as? WasmSignatureTypeDescription else {
+                    fatalError("Supertype of a signature must be a signature type")
+                }
+                assert(!superSigType.isFinal)
+                assert(!superSigType.hasUnresolvedSelfReferences())
+                assert(
+                    signature.parameterTypes.count == superSigType.signature.parameterTypes.count)
+                assert(signature.outputTypes.count == superSigType.signature.outputTypes.count)
+
+                var indexTypeIterator = indexTypes.makeIterator()
+                let linkTypes = { (types: [ILType]) -> [ILType] in
+                    return types.map { type in
+                        if case .Index = type.wasmReferenceType?.kind {
+                            let indexType = indexTypeIterator.next()!
+                            let linkedType = self.type(of: indexType).wasmTypeDefinition!
+                                .getReferenceTypeTo(
+                                    nullability: type.wasmReferenceType!.nullability)
+                            return linkedType
+                        } else {
+                            return type
+                        }
+                    }
+                }
+
+                let linkedSignature =
+                    linkTypes(signature.parameterTypes) => linkTypes(signature.outputTypes)
+
+                // Contravariant parameters
+                for (superParam, subParam) in zip(
+                    superSigType.signature.parameterTypes, linkedSignature.parameterTypes)
+                {
+                    assert(subParam.subsumes(superParam))
+                }
+
+                // Covariant outputs
+                for (superOutput, subOutput) in zip(
+                    superSigType.signature.outputTypes, linkedSignature.outputTypes)
+                {
+                    assert(superOutput.subsumes(subOutput))
+                }
+            #endif  // DEBUG
+
+            inputs.append(superTypeDef)
+        }
+
+        inputs += indexTypes
+
+        return emit(
+            WasmDefineSignatureType(
+                signature: signature, hasSuperType: superTypeDef != nil, isFinal: isFinal),
+            withInputs: inputs
+        ).output
     }
 
     /// Like wasmDefineSignatureType but instead of within a type group this defines a signature
@@ -6389,21 +6646,110 @@ public class ProgramBuilder {
     }
 
     @discardableResult
-    func wasmDefineArrayType(elementType: ILType, mutability: Bool, indexType: Variable? = nil)
+    func wasmDefineArrayType(
+        elementType: ILType, mutability: Bool, indexType: Variable? = nil,
+        superTypeDef: Variable? = nil, isFinal: Bool = false
+    )
         -> Variable
     {
-        let inputs = indexType != nil ? [indexType!] : []
+        var inputs: [Variable] = []
+        if let superTypeDef {
+            #if DEBUG
+                let superTypeDesc = type(of: superTypeDef).wasmTypeDefinition?.description
+                assert(
+                    superTypeDesc != .selfReference,
+                    "Supertype cannot be a forward or self-reference")
+                guard let superArrayType = superTypeDesc as? WasmArrayTypeDescription else {
+                    fatalError("Supertype of an array must be an array type")
+                }
+                assert(!superArrayType.isFinal)
+                assert(!superArrayType.hasUnresolvedSelfReferences())
+
+                let linkedElementType: ILType
+                if let indexType {
+                    linkedElementType = type(of: indexType).wasmTypeDefinition!.getReferenceTypeTo(
+                        nullability: elementType.wasmReferenceType!.nullability)
+                } else {
+                    linkedElementType = elementType
+                }
+
+                if superArrayType.mutability {
+                    assert(mutability)
+                    assert(linkedElementType == superArrayType.elementType)
+                } else {
+                    assert(!mutability)
+                    assert(superArrayType.elementType.subsumes(linkedElementType))
+                }
+            #endif  // DEBUG
+
+            inputs.append(superTypeDef)
+        }
+        if let indexType {
+            inputs.append(indexType)
+        }
         return emit(
-            WasmDefineArrayType(elementType: elementType, mutability: mutability),
+            WasmDefineArrayType(
+                elementType: elementType, mutability: mutability, hasSuperType: superTypeDef != nil,
+                isFinal: isFinal),
             withInputs: inputs
         ).output
     }
 
     @discardableResult
-    func wasmDefineStructType(fields: [WasmStructTypeDescription.Field], indexTypes: [Variable])
+    func wasmDefineStructType(
+        fields: [WasmStructTypeDescription.Field], indexTypes: [Variable],
+        superTypeDef: Variable? = nil, isFinal: Bool = false
+    )
         -> Variable
     {
-        return emit(WasmDefineStructType(fields: fields), withInputs: indexTypes).output
+        var inputs: [Variable] = []
+        if let superTypeDef {
+            #if DEBUG
+                let superTypeDesc = type(of: superTypeDef).wasmTypeDefinition?.description
+                assert(
+                    superTypeDesc != .selfReference,
+                    "Supertype cannot be a forward or self-reference")
+                guard let superStructType = superTypeDesc as? WasmStructTypeDescription else {
+                    fatalError("Supertype of a struct must be a struct type")
+                }
+                assert(!superStructType.isFinal)
+                assert(!superStructType.hasUnresolvedSelfReferences())
+
+                var indexTypeIterator = indexTypes.makeIterator()
+                var linkedFields: [WasmStructTypeDescription.Field] = []
+                for field in fields {
+                    if case .Index = field.type.wasmReferenceType?.kind {
+                        let indexType = indexTypeIterator.next()!
+                        let linkedType = type(of: indexType).wasmTypeDefinition!.getReferenceTypeTo(
+                            nullability: field.type.wasmReferenceType!.nullability)
+                        linkedFields.append(.init(type: linkedType, mutability: field.mutability))
+                    } else {
+                        linkedFields.append(field)
+                    }
+                }
+
+                assert(fields.count >= superStructType.fields.count)
+                for (superField, subField) in zip(superStructType.fields, linkedFields) {
+                    if superField.mutability {
+                        assert(subField.mutability)
+                        assert(subField.type == superField.type)
+                    } else {
+                        assert(!subField.mutability)
+                        assert(superField.type.subsumes(subField.type))
+                    }
+                }
+            #endif
+
+            inputs.append(superTypeDef)
+        }
+
+        inputs += indexTypes
+
+        return emit(
+            WasmDefineStructType(
+                fields: fields, hasSuperType: superTypeDef != nil, isFinal: isFinal),
+            withInputs: inputs
+        ).output
     }
 
     @discardableResult

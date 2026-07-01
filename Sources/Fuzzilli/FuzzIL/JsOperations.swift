@@ -371,7 +371,7 @@ final class LoadAsyncDisposableVariable: JsOperation {
     override var opcode: Opcode { .loadAsyncDisposableVariable(self) }
 
     init() {
-        super.init(numInputs: 1, numOutputs: 1, requiredContext: [.javascript, .asyncFunction])
+        super.init(numInputs: 1, numOutputs: 1, requiredContext: [.javascript, .async])
     }
 }
 
@@ -382,7 +382,7 @@ final class CreateNamedAsyncDisposableVariable: JsOperation {
 
     init(_ name: String) {
         self.variableName = name
-        super.init(numInputs: 1, numOutputs: 1, requiredContext: [.javascript, .asyncFunction])
+        super.init(numInputs: 1, numOutputs: 1, requiredContext: [.javascript, .async])
     }
 }
 
@@ -1469,7 +1469,7 @@ final class BeginAsyncFunction: BeginAnyNamedFunction {
     init(parameters: Parameters, functionName: String?) {
         super.init(
             parameters: parameters, functionName: functionName,
-            contextOpened: [.javascript, .subroutine, .asyncFunction])
+            contextOpened: [.javascript, .subroutine, .async])
     }
 }
 final class EndAsyncFunction: EndAnyFunction {
@@ -1482,7 +1482,7 @@ final class BeginAsyncArrowFunction: BeginAnyFunction {
 
     init(parameters: Parameters) {
         super.init(
-            parameters: parameters, contextOpened: [.javascript, .subroutine, .asyncFunction])
+            parameters: parameters, contextOpened: [.javascript, .subroutine, .async])
     }
 }
 final class EndAsyncArrowFunction: EndAnyFunction {
@@ -1496,7 +1496,7 @@ final class BeginAsyncGeneratorFunction: BeginAnyNamedFunction {
     init(parameters: Parameters, functionName: String?) {
         super.init(
             parameters: parameters, functionName: functionName,
-            contextOpened: [.javascript, .subroutine, .asyncFunction, .generatorFunction])
+            contextOpened: [.javascript, .subroutine, .async, .generatorFunction])
     }
 }
 final class EndAsyncGeneratorFunction: EndAnyFunction {
@@ -1592,7 +1592,7 @@ final class Await: JsOperation {
     init() {
         super.init(
             numInputs: 1, numOutputs: 1, attributes: [],
-            requiredContext: [.javascript, .asyncFunction])
+            requiredContext: [.javascript, .async])
     }
 }
 
@@ -1845,75 +1845,6 @@ final class Dup: JsOperation {
 
     init() {
         super.init(numInputs: 1, numOutputs: 1)
-    }
-}
-
-/// Destructs an array into n output variables.
-final class DestructArray: JsOperation {
-    override var opcode: Opcode { .destructArray(self) }
-
-    let indices: [Int64]
-    let lastIsRest: Bool
-
-    init(indices: [Int64], lastIsRest: Bool) {
-        assert(indices == indices.sorted(), "Indices must be sorted in ascending order")
-        assert(indices.count == Set(indices).count, "Indices must not have duplicates")
-        assert(
-            !lastIsRest || !indices.isEmpty,
-            "DestructArray with lastIsRest requires at least one index")
-        self.indices = indices
-        self.lastIsRest = lastIsRest
-        super.init(numInputs: 1, numOutputs: indices.count)
-    }
-}
-
-/// Destructs an array and reassigns the output to n existing variables.
-final class DestructArrayAndReassign: JsOperation {
-    override var opcode: Opcode { .destructArrayAndReassign(self) }
-
-    let indices: [Int64]
-    let lastIsRest: Bool
-
-    init(indices: [Int64], lastIsRest: Bool) {
-        assert(indices == indices.sorted(), "Indices must be sorted in ascending order")
-        assert(indices.count == Set(indices).count, "Indices must not have duplicates")
-        assert(
-            !lastIsRest || !indices.isEmpty,
-            "DestructArray with lastIsRest requires at least one index")
-        self.indices = indices
-        self.lastIsRest = lastIsRest
-        // The first input is the array being destructed
-        super.init(numInputs: 1 + indices.count, numOutputs: 0)
-    }
-}
-
-/// Destructs an object into n output variables
-final class DestructObject: JsOperation {
-    override var opcode: Opcode { .destructObject(self) }
-
-    let properties: [String]
-    let hasRestElement: Bool
-
-    init(properties: [String], hasRestElement: Bool) {
-        assert(!properties.isEmpty || hasRestElement, "Must have at least one output")
-        self.properties = properties
-        self.hasRestElement = hasRestElement
-        super.init(numInputs: 1, numOutputs: properties.count + (hasRestElement ? 1 : 0))
-    }
-}
-
-/// Destructs an object and reassigns the output to n existing variables
-final class DestructObjectAndReassign: JsOperation {
-    override var opcode: Opcode { .destructObjectAndReassign(self) }
-
-    let properties: [String]
-    let hasRestElement: Bool
-
-    init(properties: [String], hasRestElement: Bool) {
-        self.properties = properties
-        self.hasRestElement = hasRestElement
-        // The first input is the object being destructed
-        super.init(numInputs: 1 + properties.count + (hasRestElement ? 1 : 0), numOutputs: 0)
     }
 }
 
@@ -2353,32 +2284,90 @@ final class EndForLoop: JsOperation {
     }
 }
 
-public enum ForInOfLoopType {
-    case forIn
+public enum ForInOfLoopType: CaseIterable {
     case forOf
+    case forIn
+}
+
+public enum UsingType: String, Hashable, CaseIterable {
+    case none = ""
+    case using = "using"
+    case awaitUsing = "await using"
 }
 
 // Note: The last innerOutput is the label of the loop.
 public enum LoopHeader: Hashable {
     case simple
-    case arrayDestruct(indices: [Int64], hasRestElement: Bool)
-    case objectDestruct(properties: [String], hasRestElement: Bool)
+    case destruct(pattern: DestructuringPattern)
+
+    // Legacy helper methods to allow tests to use the old concise syntax
+    public static func arrayDestruct(indices: [Int64], hasRestElement: Bool) -> LoopHeader {
+        var elements = [DestructuringPattern.ArrayElement]()
+        var elementIndices = indices
+        if hasRestElement && !elementIndices.isEmpty {
+            elementIndices.removeLast()
+        }
+
+        // In the old format, the rest element's index dictated how many elements came before it.
+        let maxIndex =
+            hasRestElement && !indices.isEmpty
+            ? Int(indices.last!) - 1 : Int(elementIndices.max() ?? -1)
+
+        if maxIndex >= 0 {
+            for i in 0...maxIndex {
+                if elementIndices.contains(Int64(i)) {
+                    elements.append(
+                        DestructuringPattern.ArrayElement(
+                            target: .flatBinding))
+                } else {
+                    elements.append(
+                        DestructuringPattern.ArrayElement(
+                            target: nil))
+                }
+            }
+        }
+        return .destruct(
+            pattern: .array(
+                DestructuringPattern.ArrayPattern(
+                    elements: elements, restTarget: hasRestElement ? .flatBinding : .none))
+        )
+    }
+
+    public static func objectDestruct(properties: [String], hasRestElement: Bool) -> LoopHeader {
+        let props = properties.map {
+            DestructuringPattern.ObjectProperty(
+                key: .string($0), target: .flatBinding)
+        }
+        return .destruct(
+            pattern: .object(
+                DestructuringPattern.ObjectPattern(
+                    properties: props, hasRestElement: hasRestElement)))
+    }
 }
 
 final class ForLoop: JsOperation {
     let header: LoopHeader
     let isAsync: Bool
     let type: ForInOfLoopType
+    let usingType: UsingType
     public var isForIn: Bool { return type == .forIn }
 
-    init(type: ForInOfLoopType, isAsync: Bool = false, header: LoopHeader = .simple) {
+    init(
+        type: ForInOfLoopType, isAsync: Bool = false,
+        usingType: UsingType = .none, header: LoopHeader = .simple,
+        patternInputs: Int = 0
+    ) {
         self.header = header
         self.isAsync = isAsync
         self.type = type
+        self.usingType = usingType
+
+        assert(usingType == .none || header == .simple, "using declarations cannot be destructured")
 
         if type == .forIn {
             assert(!isAsync, "For-in loops cannot be async")
             assert(header == .simple, "For-in loops cannot have destructuring headers")
+            assert(usingType == .none, "For-in loops cannot use using")
         }
 
         let numInnerOutputs: Int
@@ -2387,40 +2376,20 @@ final class ForLoop: JsOperation {
         case .simple:
             numInnerOutputs = 2
 
-        case .arrayDestruct(let indices, _):
-            assert(indices.count >= 1)
-            assert(indices == indices.sorted(), "Indices must be sorted in ascending order")
-            assert(indices.count == Set(indices).count, "Indices must not have duplicates")
-            numInnerOutputs = indices.count + 1  // loop label is appended
-
-        case .objectDestruct(let properties, let hasRestElement):
-            assert(!properties.isEmpty || hasRestElement, "Must have at least one output")
-            numInnerOutputs = properties.count + (hasRestElement ? 1 : 0) + 1  // loop label is appended
+        case .destruct(let pattern):
+            numInnerOutputs = pattern.numBindings + 1  // loop label is appended
         }
 
         super.init(
-            numInputs: 1, numInnerOutputs: numInnerOutputs,
+            numInputs: 1 + patternInputs, numInnerOutputs: numInnerOutputs,
             attributes: [.isBlockStart, .propagatesSurroundingContext],
-            requiredContext: isAsync ? [.javascript, .asyncFunction] : [.javascript],
+            requiredContext: isAsync ? [.javascript, .async] : [.javascript],
             contextOpened: [.loop])
     }
 
-    var indices: [Int64] {
-        if case .arrayDestruct(let indices, _) = self.header { return indices }
-        preconditionFailure("Invalid header for ForLoop indices")
-    }
-
-    var properties: [String] {
-        if case .objectDestruct(let properties, _) = self.header { return properties }
-        preconditionFailure("Invalid header for ForLoop properties")
-    }
-
-    var hasRestElement: Bool {
-        switch self.header {
-        case .arrayDestruct(_, let hasRest): return hasRest
-        case .objectDestruct(_, let hasRest): return hasRest
-        default: preconditionFailure("Invalid header for ForLoop hasRestElement")
-        }
+    var pattern: DestructuringPattern {
+        if case .destruct(let pattern) = self.header { return pattern }
+        preconditionFailure("Invalid header for ForLoop pattern")
     }
 
     override var opcode: Opcode {
@@ -2854,12 +2823,17 @@ class WasmDefineArrayType: WasmTypeOperation {
     override var opcode: Opcode { .wasmDefineArrayType(self) }
     let elementType: ILType
     let mutability: Bool
+    let hasSuperType: Bool
+    let isFinal: Bool
 
-    init(elementType: ILType, mutability: Bool) {
+    init(elementType: ILType, mutability: Bool, hasSuperType: Bool = false, isFinal: Bool = false) {
         self.elementType = elementType
         self.mutability = mutability
+        self.hasSuperType = hasSuperType
+        self.isFinal = isFinal
+        let numInputs = (hasSuperType ? 1 : 0) + elementType.requiredInputCount()
         super.init(
-            numInputs: elementType.requiredInputCount(), numOutputs: 1,
+            numInputs: numInputs, numOutputs: 1,
             requiredContext: [.wasmTypeGroup])
     }
 }
@@ -2870,24 +2844,43 @@ class WasmDefineStructType: WasmTypeOperation {
     typealias Field = WasmStructTypeDescription.Field
 
     let fields: [Field]
+    let hasSuperType: Bool
+    let isFinal: Bool
 
-    init(fields: [Field]) {
+    init(fields: [Field], hasSuperType: Bool = false, isFinal: Bool = false) {
         self.fields = fields
-        let numInputs = fields.map { $0.type.requiredInputCount() }.reduce(0) { $0 + $1 }
-        super.init(numInputs: numInputs, numOutputs: 1, requiredContext: [.wasmTypeGroup])
+        self.hasSuperType = hasSuperType
+        self.isFinal = isFinal
+        let numInputs =
+            (hasSuperType ? 1 : 0)
+            + fields.map {
+                $0.type.requiredInputCount()
+            }.reduce(0) { $0 + $1 }
+        super.init(
+            numInputs: numInputs, numOutputs: 1,
+            requiredContext: [.wasmTypeGroup])
     }
 }
 
 class WasmDefineSignatureType: WasmTypeOperation {
     override var opcode: Opcode { .wasmDefineSignatureType(self) }
     let signature: WasmSignature
+    let hasSuperType: Bool
+    let isFinal: Bool
 
-    init(signature: WasmSignature) {
+    init(signature: WasmSignature, hasSuperType: Bool = false, isFinal: Bool = false) {
         self.signature = signature
-        let numInputs = (signature.outputTypes + signature.parameterTypes).map {
-            $0.requiredInputCount()
-        }.reduce(0) { $0 + $1 }
-        super.init(numInputs: numInputs, numOutputs: 1, requiredContext: [.wasmTypeGroup])
+        self.hasSuperType = hasSuperType
+        self.isFinal = isFinal
+        let numInputs =
+            (hasSuperType ? 1 : 0)
+            + (signature.outputTypes + signature.parameterTypes)
+            .map {
+                $0.requiredInputCount()
+            }.reduce(0) { $0 + $1 }
+        super.init(
+            numInputs: numInputs, numOutputs: 1,
+            requiredContext: [.wasmTypeGroup])
     }
 }
 
@@ -3039,7 +3032,7 @@ final class BeginBundleModule: JsOperation {
         self.moduleName = moduleName
         super.init(
             attributes: .isBlockStart, requiredContext: [.bundle],
-            contextOpened: [.moduleTopLevel, .javascript])
+            contextOpened: [.moduleTopLevel, .javascript, .async])
     }
 }
 
@@ -3051,6 +3044,39 @@ final class EndBundleModule: JsOperation {
     init(moduleName: String) {
         self.moduleName = moduleName
         super.init(numOutputs: 1, attributes: .isBlockEnd, requiredContext: .moduleTopLevel)
+    }
+}
+
+// Pending module forward declaration
+final class DeclarePendingBundleModule: JsOperation {
+    override var opcode: Opcode { .declarePendingBundleModule(self) }
+    let moduleName: String
+    let exportNames: [String]
+
+    init(moduleName: String, exportNames: [String]) {
+        self.moduleName = moduleName
+        self.exportNames = exportNames
+        super.init(numOutputs: 1, requiredContext: [.bundle])
+    }
+}
+
+// Pending module definition. The input is the DeclarePendingBundleModule operation.
+final class BeginPendingBundleModule: JsOperation {
+    override var opcode: Opcode { .beginPendingBundleModule(self) }
+
+    init() {
+        super.init(
+            numInputs: 1,
+            attributes: .isBlockStart, requiredContext: [.bundle],
+            contextOpened: [.moduleTopLevel, .javascript, .async])
+    }
+}
+
+final class EndPendingBundleModule: JsOperation {
+    override var opcode: Opcode { .endPendingBundleModule(self) }
+
+    init() {
+        super.init(attributes: .isBlockEnd, requiredContext: .moduleTopLevel)
     }
 }
 
@@ -3090,13 +3116,23 @@ final class ImportNamespace: JsOperation {
     }
 }
 
+final class DynamicImport: JsOperation {
+    override var opcode: Opcode { .dynamicImport(self) }
+    let isDeferred: Bool
+
+    init(isDeferred: Bool) {
+        self.isDeferred = isDeferred
+        super.init(numInputs: 1, numOutputs: 1, attributes: [.isNotInputMutable])
+    }
+}
+
 final class BeginBundleModuleEntryPoint: JsOperation {
     override var opcode: Opcode { .beginBundleModuleEntryPoint(self) }
 
     init() {
         super.init(
             attributes: .isBlockStart, requiredContext: [.bundle],
-            contextOpened: [.moduleTopLevel, .javascript])
+            contextOpened: [.moduleTopLevel, .javascript, .async])
     }
 }
 
@@ -3130,5 +3166,255 @@ final class CreateMap: JsOperation {
         super.init(
             numInputs: numInitialValues, numOutputs: 1, firstVariadicInput: 0,
             attributes: [.isVariadic])
+    }
+}
+
+/// The native FuzzIL representation of a destructuring pattern
+public indirect enum DestructuringPattern: Hashable, Equatable {
+    case object(ObjectPattern)
+    case array(ArrayPattern)
+
+    public enum Target: Hashable, Equatable {
+        case flatBinding
+        case pattern(DestructuringPattern)
+        case property(String)
+        case element(Int64)
+        case computedProperty
+        case superProperty(String)
+        case superElement(Int64)
+        case superComputedProperty
+    }
+
+    public struct ObjectPattern: Hashable, Equatable {
+        public let properties: [ObjectProperty]
+        public let hasRestElement: Bool
+        public init(properties: [ObjectProperty], hasRestElement: Bool) {
+            self.properties = properties
+            self.hasRestElement = hasRestElement
+        }
+    }
+
+    public struct ObjectProperty: Hashable, Equatable {
+        public enum Key: Hashable, Equatable {
+            case string(String)
+            case computed
+        }
+        public let key: Key
+
+        public let target: Target
+        public let hasDefaultValue: Bool
+
+        public init(key: Key, target: Target, hasDefaultValue: Bool = false) {
+            self.key = key
+            self.target = target
+            self.hasDefaultValue = hasDefaultValue
+        }
+    }
+
+    public struct ArrayPattern: Hashable, Equatable {
+        public let elements: [ArrayElement]
+        public let restTarget: Target?
+
+        public init(elements: [ArrayElement], restTarget: Target?) {
+            self.elements = elements
+            self.restTarget = restTarget
+        }
+    }
+
+    public struct ArrayElement: Hashable, Equatable {
+        public let target: Target?
+        public let hasDefaultValue: Bool
+
+        public init(target: Target?, hasDefaultValue: Bool = false) {
+            self.target = target
+            self.hasDefaultValue = hasDefaultValue
+        }
+    }
+}
+
+extension DestructuringPattern {
+    public var hasNestedDestructuring: Bool {
+        switch self {
+        case .object(let obj):
+            for prop in obj.properties {
+                if case .pattern = prop.target { return true }
+            }
+            return false
+        case .array(let arr):
+            for elem in arr.elements {
+                if case .pattern = elem.target { return true }
+            }
+            if case .pattern = arr.restTarget { return true }
+            return false
+        }
+    }
+
+    public var hasRestElement: Bool {
+        switch self {
+        case .object(let obj):
+            return obj.hasRestElement
+        case .array(let arr):
+            return arr.restTarget != .none
+        }
+    }
+
+    var numExtraInputs: Int {
+        func countTargetInputs(_ target: DestructuringPattern.Target) -> Int {
+            switch target {
+            case .pattern(let p): return p.numExtraInputs
+            case .property(_), .element(_), .superComputedProperty: return 1
+            case .computedProperty: return 2
+            default: return 0
+            }
+        }
+
+        switch self {
+        case .object(let obj):
+            var count = 0
+            for prop in obj.properties {
+                if case .computed = prop.key { count += 1 }
+                if prop.hasDefaultValue { count += 1 }
+                count += countTargetInputs(prop.target)
+            }
+            return count
+        case .array(let arr):
+            var count = 0
+            for elem in arr.elements {
+                if elem.hasDefaultValue { count += 1 }
+                if let target = elem.target {
+                    count += countTargetInputs(target)
+                }
+            }
+            if let restTarget = arr.restTarget {
+                count += countTargetInputs(restTarget)
+            }
+            return count
+        }
+    }
+
+    var numBindings: Int {
+        switch self {
+        case .object(let obj):
+            var count = 0
+            for prop in obj.properties {
+                switch prop.target {
+                case .flatBinding: count += 1
+                case .pattern(let p): count += p.numBindings
+                default: break
+                }
+            }
+            if obj.hasRestElement { count += 1 }
+            return count
+        case .array(let arr):
+            var count = 0
+            for elem in arr.elements {
+                switch elem.target {
+                case .flatBinding: count += 1
+                case .pattern(let p): count += p.numBindings
+                default: break
+                }
+            }
+            switch arr.restTarget {
+            case .flatBinding: count += 1
+            case .pattern(let p): count += p.numBindings
+            default: break
+            }
+            return count
+        }
+    }
+}
+
+/// Destructs a variable using a nested pattern into n output variables.
+///
+/// The inputs to this operation are laid out as follows:
+///   1. `input(0)`: The source object/iterable being destructured.
+///   2. `input(1...n)`: The variables used for computed property keys and default values.
+///      These variables appear in the exact lexicographical order of a depth-first,
+///      left-to-right traversal of the `DestructuringPattern` AST.
+///
+/// The outputs of this operation are the newly declared variables, which also strictly
+/// match the depth-first, left-to-right order of the bindings in the pattern.
+final class Destruct: JsOperation {
+    override var opcode: Opcode { .destruct(self) }
+
+    let pattern: DestructuringPattern
+
+    init(pattern: DestructuringPattern, numInputs: Int, numOutputs: Int) {
+        self.pattern = pattern
+        assert(numInputs == 1 + pattern.numExtraInputs)
+        super.init(numInputs: numInputs, numOutputs: numOutputs, attributes: [.isMutable])
+    }
+}
+
+/// Destructs a variable using a nested pattern and reassigns to n existing variables.
+///
+/// The inputs to this operation are laid out as follows:
+///   1. `input(0)`: The source object/iterable being destructured.
+///   2. `input(1...n)`: A flat, interleaved sequence of variables representing computed property
+///      keys, target variables being reassigned, and default values. These variables appear
+///      in the exact lexicographical order of a depth-first, left-to-right traversal of the
+///      `DestructuringPattern` AST. For any given property/element, the ordering is:
+///      `[computedKeyVariable]`, `[targetVariable]`, `[defaultValueVariable]`.
+final class DestructAndReassign: JsOperation {
+    override var opcode: Opcode { .destructAndReassign(self) }
+
+    let pattern: DestructuringPattern
+    let isTarget: [Bool]
+
+    init(pattern: DestructuringPattern, numInputs: Int) {
+        self.pattern = pattern
+        var isReassignmentTarget = [Bool](repeating: false, count: numInputs)
+        var currentInputIdx = 1
+
+        func traverse(_ pattern: DestructuringPattern) {
+            func traverseTarget(_ target: DestructuringPattern.Target) {
+                switch target {
+                case .flatBinding:
+                    isReassignmentTarget[currentInputIdx] = true
+                    currentInputIdx += 1
+                case .pattern(let p):
+                    traverse(p)
+                case .property(_), .element(_), .superComputedProperty:
+                    currentInputIdx += 1
+                case .computedProperty:
+                    currentInputIdx += 2
+                case .superProperty(_), .superElement(_):
+                    break
+                }
+            }
+
+            switch pattern {
+            case .object(let obj):
+                for prop in obj.properties {
+                    if case .computed = prop.key {
+                        currentInputIdx += 1
+                    }
+                    traverseTarget(prop.target)
+                    if prop.hasDefaultValue {
+                        currentInputIdx += 1
+                    }
+                }
+                if obj.hasRestElement {
+                    isReassignmentTarget[currentInputIdx] = true
+                    currentInputIdx += 1
+                }
+            case .array(let arr):
+                for elem in arr.elements {
+                    if let target = elem.target {
+                        traverseTarget(target)
+                    }
+                    if elem.hasDefaultValue {
+                        currentInputIdx += 1
+                    }
+                }
+                if let restTarget = arr.restTarget {
+                    traverseTarget(restTarget)
+                }
+            }
+        }
+        traverse(pattern)
+        assert(currentInputIdx == numInputs)
+        self.isTarget = isReassignmentTarget
+        super.init(numInputs: numInputs, numOutputs: 0, attributes: [.isMutable])
     }
 }

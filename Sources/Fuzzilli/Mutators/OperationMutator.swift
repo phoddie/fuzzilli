@@ -28,6 +28,17 @@ public class OperationMutator: BaseInstructionMutator {
     public override func mutate(_ instr: Instruction, _ b: ProgramBuilder) {
         b.trace("Mutating next operation")
 
+        // Adopt inputs first to avoid mixing in variables from the current ProgramBuilder
+        // context via randomJsVariable() (e.g., from extendVariadicOperation()) for which
+        // adopt() would be incorrect.
+        // We must not adopt the outputs yet, because extending/mutating the operation might
+        // generate new instructions (and thus allocate new variables). If we adopt the outputs
+        // beforehand, their variable indices would be lower than the generated variables, which
+        // violates the variable numbering convention.
+        let adoptedInputs = b.adopt(instr.inputs)
+        let instr = Instruction(
+            instr.op, inouts: adoptedInputs + instr.outputs + instr.innerOutputs)
+
         let newInstr: Instruction
         if instr.isOperationMutable && instr.isVariadic {
             newInstr =
@@ -39,7 +50,12 @@ public class OperationMutator: BaseInstructionMutator {
             newInstr = extendVariadicOperation(instr, b)
         }
 
-        b.adopt(newInstr)
+        let adoptedOutputs = b.adopt(newInstr.outputs)
+        let adoptedInnerOutputs = b.adopt(newInstr.innerOutputs)
+        let finalInstr = Instruction(
+            newInstr.op, inouts: newInstr.inputs + adoptedOutputs + adoptedInnerOutputs)
+
+        b.append(finalInstr)
     }
 
     private func mutateOperation(_ instr: Instruction, _ b: ProgramBuilder) -> Instruction {
@@ -267,38 +283,13 @@ public class OperationMutator: BaseInstructionMutator {
             newOp = BinaryOperation(chooseUniform(from: BinaryOperator.allCases))
         case .update(_):
             newOp = Update(chooseUniform(from: BinaryOperator.allCases))
-        case .destructArray(let op):
-            var newIndices = op.indices
-            replaceRandomElement(
-                in: &newIndices, generatingRandomValuesWith: { return Int64.random(in: 0..<10) })
-            assert(newIndices.count == Set(newIndices).count)
-            newOp = DestructArray(indices: newIndices.sorted(), lastIsRest: !op.lastIsRest)
-        case .destructArrayAndReassign(let op):
-            var newIndices = op.indices
-            replaceRandomElement(
-                in: &newIndices, generatingRandomValuesWith: { return Int64.random(in: 0..<10) })
-            assert(newIndices.count == Set(newIndices).count)
-            newOp = DestructArrayAndReassign(
-                indices: newIndices.sorted(), lastIsRest: !op.lastIsRest)
-        case .destructObject(let op):
-            var newProperties = op.properties
-            replaceRandomElement(
-                in: &newProperties, generatingRandomValuesWith: { return b.randomPropertyName() })
-            assert(newProperties.count == Set(newProperties).count)
-            newOp = DestructObject(
-                properties: newProperties.sorted(), hasRestElement: !op.hasRestElement)
-        case .destructObjectAndReassign(let op):
-            var newProperties = op.properties
-            replaceRandomElement(
-                in: &newProperties, generatingRandomValuesWith: { return b.randomPropertyName() })
-            assert(newProperties.count == Set(newProperties).count)
-            newOp = DestructObjectAndReassign(
-                properties: newProperties.sorted(), hasRestElement: !op.hasRestElement)
+
         case .compare(_):
             newOp = Compare(chooseUniform(from: Comparator.allCases))
         case .createNamedVariable(let op):
-            // We just use property names as variable names here. It's not clear if there's a better alternative and this also works well with `with` statements.
-            newOp = CreateNamedVariable(b.randomPropertyName(), declarationMode: op.declarationMode)
+            // We must use a valid identifier name here.
+            newOp = CreateNamedVariable(
+                b.randomIdentifierName(), declarationMode: op.declarationMode)
         case .callSuperMethod(let op):
             let methodName = b.currentSuperType().randomMethod() ?? b.randomMethodName()
             newOp = CallSuperMethod(methodName: methodName, numArguments: op.numArguments)
@@ -641,6 +632,23 @@ public class OperationMutator: BaseInstructionMutator {
             inouts.append(b.nextVariable())
         case .importNamespace(let op):
             newOp = ImportNamespace(isDeferred: !op.isDeferred)
+        case .dynamicImport(let op):
+            newOp = DynamicImport(isDeferred: !op.isDeferred)
+        case .destruct(let op):
+            if let newPattern = mutateDestructuringPattern(
+                op.pattern, b, &inouts, isReassign: false)
+            {
+                newOp = Destruct(pattern: newPattern, numInputs: 1, numOutputs: inouts.count - 1)
+            } else {
+                return instr
+            }
+        case .destructAndReassign(let op):
+            if let newPattern = mutateDestructuringPattern(op.pattern, b, &inouts, isReassign: true)
+            {
+                newOp = DestructAndReassign(pattern: newPattern, numInputs: inouts.count)
+            } else {
+                return instr
+            }
         // Unexpected operations to make the switch fully exhaustive.
         case .nop(_),
             .loadUndefined(_),
@@ -776,6 +784,9 @@ public class OperationMutator: BaseInstructionMutator {
             .endBundleScript(_),
             .beginBundleModule(_),
             .endBundleModule(_),
+            .declarePendingBundleModule(_),
+            .beginPendingBundleModule(_),
+            .endPendingBundleModule(_),
             .beginBundleModuleEntryPoint(_),
             .endBundleModuleEntryPoint(_),
             .exportVariables(_),
@@ -792,6 +803,8 @@ public class OperationMutator: BaseInstructionMutator {
             .wasmTableSet(_),
             .wasmCallIndirect(_),
             .wasmCallDirect(_),
+            .wasmCallRef(_),
+            .wasmReturnCallRef(_),
             .wasmReturnCallDirect(_),
             .wasmReturnCallIndirect(_),
             .wasmi32EqualZero(_),
@@ -865,6 +878,8 @@ public class OperationMutator: BaseInstructionMutator {
             .wasmStructSet(_),
             .wasmRefNull(_),
             .wasmRefIsNull(_),
+            .wasmRefAsNonNull(_),
+            .wasmRefFunc(_),
             .wasmRefI31(_),
             .wasmAnyConvertExtern(_),
             .wasmExternConvertAny(_),
@@ -992,6 +1007,22 @@ public class OperationMutator: BaseInstructionMutator {
             }
             inputs.append(b.randomVariable(forUseAs: elementType))
 
+        case .wasmArrayNewFixed(let op):
+            let arrayType = b.type(of: instr.input(0))
+            let desc = arrayType.wasmTypeDefinition!.description as! WasmArrayTypeDescription
+            let inputType = desc.elementType.unpacked()
+            guard
+                let additionalValue = b.currentWasmFunction.tryFindOrGenerateWasmVar(
+                    ofType: inputType)
+            else {
+                // If we can't find any valid input for it, there can't be any current inputs.
+                assert(op.size == 0)
+                // Skip the mutation.
+                return instr
+            }
+            newOp = WasmArrayNewFixed(size: op.size + 1)
+            inputs.append(additionalValue)
+
         default:
             fatalError("Unhandled Operation: \(type(of: instr.op))")
         }
@@ -1022,5 +1053,96 @@ public class OperationMutator: BaseInstructionMutator {
         }
 
         // Failed to find a replacement value, so just leave the array unmodified.
+    }
+}
+
+extension OperationMutator {
+    fileprivate func mutateDestructuringPattern(
+        _ pattern: DestructuringPattern, _ b: ProgramBuilder, _ inouts: inout ArraySlice<Variable>,
+        isReassign: Bool
+    ) -> DestructuringPattern? {
+        switch pattern {
+        case .array(let arr):
+            // Check flat
+            // TODO(rherouart): Support mutating indices when default values are present.
+            for elem in arr.elements {
+                if elem.hasDefaultValue { return nil }
+                switch elem.target {
+                case .flatBinding?, nil: break
+                default: return nil
+                }
+            }
+            switch arr.restTarget {
+            case nil, .flatBinding?: break
+            default: return nil
+            }
+
+            // TODO(rherouart): Simplify this by directly adding or removing random elisions instead of mapping to and from indices.
+            var indices: [Int64] = []
+            for (idx, elem) in arr.elements.enumerated() {
+                if case .flatBinding = elem.target { indices.append(Int64(idx)) }
+            }
+            if case .flatBinding = arr.restTarget {
+                indices.append((indices.last ?? -1) + 1)
+            }
+
+            guard let indexToReplace = indices.indices.randomElement() else { return nil }
+            let newValue = Int64.random(in: 0..<10)
+            guard !indices.contains(newValue) else { return nil }
+            indices[indexToReplace] = newValue
+
+            let sortedIndices = indices.sorted()
+            // TODO(rherouart): Toggle this behind some probability.
+            let lastIsRest = (arr.restTarget == nil)  // Toggle it
+
+            var elements: [DestructuringPattern.ArrayElement] = []
+            var currentIndex: Int64 = 0
+            for idx in sortedIndices {
+                while currentIndex < idx {
+                    elements.append(.init(target: nil))
+                    currentIndex += 1
+                }
+                if lastIsRest && idx == sortedIndices.last! { break }
+                elements.append(.init(target: .flatBinding))
+                currentIndex += 1
+            }
+            assert(!sortedIndices.isEmpty)
+            let restTarget: DestructuringPattern.Target? =
+                lastIsRest ? .flatBinding : .none
+
+            return .array(.init(elements: elements, restTarget: restTarget))
+
+        case .object(let obj):
+            for prop in obj.properties {
+                if prop.hasDefaultValue { return nil }
+                if case .computed = prop.key { return nil }
+                if case .flatBinding = prop.target {} else { return nil }
+            }
+
+            var properties: [String] = []
+            for prop in obj.properties {
+                if case .string(let key) = prop.key { properties.append(key) }
+            }
+
+            guard let indexToReplace = properties.indices.randomElement() else { return nil }
+            let newValue = b.randomPropertyName()
+            guard !properties.contains(newValue) else { return nil }
+            properties[indexToReplace] = newValue
+
+            // TODO(rherouart): Toggle this behind some probability.
+            // We can only add/remove bindings if we are reassigning, because changing
+            // the number of outputs of an existing instruction breaks contiguous variables.
+            let hasRest = isReassign ? !obj.hasRestElement : obj.hasRestElement
+            if hasRest && !obj.hasRestElement {
+                inouts.append(b.randomJsVariable())
+            } else if !hasRest && obj.hasRestElement {
+                inouts.removeLast()
+            }
+
+            let newProps = properties.sorted().map {
+                DestructuringPattern.ObjectProperty(key: .string($0), target: .flatBinding)
+            }
+            return .object(.init(properties: newProps, hasRestElement: hasRest))
+        }
     }
 }

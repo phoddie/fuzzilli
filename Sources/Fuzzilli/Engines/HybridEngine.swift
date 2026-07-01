@@ -93,10 +93,12 @@ public class HybridEngine: FuzzEngine {
         }
     }
 
-    private func generateTemplateProgram(template: ProgramTemplate) -> Program {
+    func generateTemplateProgram(template: ProgramTemplate) -> Program {
         let b = fuzzer.makeBuilder()
         b.traceHeader("Generating program based on \(template.name) template")
-        template.generate(in: b)
+        b.maybeWrapInsideBundleScript {
+            template.generate(in: b)
+        }
         let program = b.finalize()
 
         program.contributors.insert(template)
@@ -105,7 +107,7 @@ public class HybridEngine: FuzzEngine {
     }
 
     public override func fuzzOne(_ group: DispatchGroup) {
-        let template = fuzzer.programTemplates.randomElement()
+        let template = fuzzer.programTemplates.randomElement()!
 
         let generatedProgram = generateTemplateProgram(template: template)
 
@@ -152,7 +154,7 @@ public class HybridEngine: FuzzEngine {
         var parent = refinedProgram
         for _ in 0..<numConsecutiveMutations {
             // TODO: factor out code shared with the MutationEngine?
-            var mutator = fuzzer.mutators.randomElement()
+            var mutator = fuzzer.mutators.randomElement()!
             let maxAttempts = 10
             var mutatedProgram: Program? = nil
             for _ in 0..<maxAttempts {
@@ -165,7 +167,7 @@ public class HybridEngine: FuzzEngine {
                 } else {
                     // Try a different mutator.
                     mutator.failedToGenerate()
-                    mutator = fuzzer.mutators.randomElement()
+                    mutator = fuzzer.mutators.randomElement()!
                 }
             }
 

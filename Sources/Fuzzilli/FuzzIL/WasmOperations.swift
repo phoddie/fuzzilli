@@ -956,7 +956,10 @@ final class WasmStoreGlobal: WasmOperation {
 final class WasmTableGet: WasmOperation {
     override var opcode: Opcode { .wasmTableGet(self) }
 
-    init() {
+    let elementType: ILType
+
+    init(elementType: ILType) {
+        self.elementType = elementType
         super.init(numInputs: 2, numOutputs: 1, requiredContext: [.wasmFunction])
     }
 }
@@ -1004,6 +1007,32 @@ final class WasmCallDirect: WasmOperation {
         super.init(
             numInputs: 1 + parameterCount, numOutputs: outputCount, requiredContext: [.wasmFunction]
         )
+    }
+
+    var parameterCount: Int { numInputs - 1 }
+}
+
+final class WasmCallRef: WasmOperation {
+    override var opcode: Opcode { .wasmCallRef(self) }
+
+    init(parameterCount: Int, outputCount: Int) {
+        // The inputs are the function reference and the function arguments.
+        super.init(
+            numInputs: 1 + parameterCount, numOutputs: outputCount, requiredContext: [.wasmFunction]
+        )
+    }
+
+    var parameterCount: Int { numInputs - 1 }
+}
+
+final class WasmReturnCallRef: WasmOperation {
+    override var opcode: Opcode { .wasmReturnCallRef(self) }
+
+    init(parameterCount: Int) {
+        // The inputs are the function reference and the function arguments.
+        super.init(
+            numInputs: 1 + parameterCount, numOutputs: 0, attributes: [.isJump],
+            requiredContext: [.wasmFunction])
     }
 
     var parameterCount: Int { numInputs - 1 }
@@ -2339,11 +2368,9 @@ class WasmArrayNewFixed: WasmOperation {
 
     init(size: Int) {
         self.size = size
-        // TODO(mliedtke): Mark this operation variadic and extend
-        // OperationMutator::extendVariadicOperationByOneInput and ensure correct types of added
-        // inputs. (This requires some integration for .wasmRef(Index) to ensure it isn't just an
-        // index type but a matching one!)
-        super.init(numInputs: size + 1, numOutputs: 1, requiredContext: [.wasmFunction])
+        super.init(
+            numInputs: 1 + size, numOutputs: 1, firstVariadicInput: 1, attributes: [.isVariadic],
+            requiredContext: [.wasmFunction])
     }
 }
 
@@ -2435,6 +2462,22 @@ class WasmRefNull: WasmOperation {
 
 class WasmRefIsNull: WasmOperation {
     override var opcode: Opcode { .wasmRefIsNull(self) }
+
+    init() {
+        super.init(numInputs: 1, numOutputs: 1, requiredContext: [.wasmFunction])
+    }
+}
+
+class WasmRefAsNonNull: WasmOperation {
+    override var opcode: Opcode { .wasmRefAsNonNull(self) }
+
+    init() {
+        super.init(numInputs: 1, numOutputs: 1, requiredContext: [.wasmFunction])
+    }
+}
+
+class WasmRefFunc: WasmOperation {
+    override var opcode: Opcode { .wasmRefFunc(self) }
 
     init() {
         super.init(numInputs: 1, numOutputs: 1, requiredContext: [.wasmFunction])

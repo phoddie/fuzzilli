@@ -802,6 +802,51 @@ class MinimizerTests: XCTestCase {
         XCTAssertEqual(originalProgram, actualProgram)
     }
 
+    func testInliningWithTopLevelAsyncDisposableVariable() {
+        let evaluator = EvaluatorForMinimizationTests()
+        let config = Configuration(logLevel: .error, generateBundle: true)
+        let fuzzer = makeMockFuzzer(config: config, evaluator: evaluator)
+        let b = fuzzer.makeBuilder()
+
+        // Build input program with a bundle.
+        b.buildBundleModuleEntryPoint {
+            let a1 = b.loadBool(true)
+
+            // We need some function to be an inlining candidate, but it doesn't have to be related to the disposable.
+            let f = b.buildPlainFunction(with: .parameters(n: 0)) { args in
+                b.doReturn(a1)
+            }
+
+            let r = b.callFunction(f, withArgs: [])
+            let o = b.createObject(with: [:])
+            evaluator.nextInstructionIsImportant(in: b)
+            b.setProperty("result", of: o, to: r)
+
+            // This is allowed because we are in .async context (opened by buildBundleModuleEntryPoint)
+            // but activeSubroutineDefinitions is empty.
+            b.loadAsyncDisposableVariable(a1)
+        }
+
+        let originalProgram = b.finalize()
+
+        // Build expected output program.
+        b.buildBundleModuleEntryPoint {
+            let a1 = b.loadBool(true)
+            let o = b.createObject(with: [:])
+            b.setProperty("result", of: o, to: a1)
+            b.loadAsyncDisposableVariable(a1)
+        }
+        let expectedProgram = b.finalize()
+
+        evaluator.operationIsImportant(LoadBoolean.self)
+        evaluator.operationIsImportant(LoadAsyncDisposableVariable.self)
+        evaluator.keepReturnsInFunctions = true
+
+        let actualProgram = minimize(originalProgram, with: fuzzer)
+        XCTAssertEqual(FuzzILLifter().lift(expectedProgram), FuzzILLifter().lift(actualProgram))
+        XCTAssertEqual(expectedProgram, actualProgram)
+    }
+
     func testMultiInlining() {
         let evaluator = EvaluatorForMinimizationTests()
         let fuzzer = makeMockFuzzer(evaluator: evaluator)
@@ -1470,7 +1515,7 @@ class MinimizerTests: XCTestCase {
         // of all important operations doesn't decrease, and so this will allow the DestructObject
         // to be converted into GetProperty operations but prevent both the DestructObject and the
         // GetProperty from being removed entirely.
-        evaluator.operationIsImportant(DestructObject.self)
+        evaluator.operationIsImportant(Destruct.self)
         evaluator.operationIsImportant(GetProperty.self)
 
         // Perform minimization and check that the two programs are equal.
@@ -1506,7 +1551,7 @@ class MinimizerTests: XCTestCase {
         // of all important operations doesn't decrease, and so this will allow the DestructArray
         // to be converted into GetElement operations but prevent both the DestructArray and the
         // GetElement from being removed entirely.
-        evaluator.operationIsImportant(DestructArray.self)
+        evaluator.operationIsImportant(Destruct.self)
         evaluator.operationIsImportant(GetElement.self)
 
         // Perform minimization and check that the two programs are equal.
@@ -1540,7 +1585,7 @@ class MinimizerTests: XCTestCase {
         let expectedProgram = b.finalize()
 
         // See testDestructuringSimplification2 for why these are marked important.
-        evaluator.operationIsImportant(DestructArray.self)
+        evaluator.operationIsImportant(Destruct.self)
         evaluator.operationIsImportant(GetElement.self)
 
         let actualProgram = minimize(originalProgram, with: fuzzer)
@@ -1595,7 +1640,7 @@ class MinimizerTests: XCTestCase {
     }
 
     func testBundleMinimizing() {
-        let config = Configuration(generateBundle: true)
+        let config = Configuration(logLevel: .error, generateBundle: true)
         let evaluator = EvaluatorForMinimizationTests()
         let fuzzer = makeMockFuzzer(config: config, evaluator: evaluator)
         let b = fuzzer.makeBuilder()
@@ -1626,6 +1671,50 @@ class MinimizerTests: XCTestCase {
         b.emit(EndBundleScript())
 
         let expectedProgram = b.finalize()
+
+        // Perform minimization and check that the two programs are equal.
+        let actualProgram = minimize(originalProgram, with: fuzzer)
+        XCTAssertEqual(expectedProgram, actualProgram)
+    }
+
+    func testPendingModuleMinimization() {
+        let config = Configuration(logLevel: .error, generateBundle: true)
+        let evaluator = EvaluatorForMinimizationTests()
+        let fuzzer = makeMockFuzzer(config: config, evaluator: evaluator)
+
+        // Build input program to be minimized.
+        var originalProgram: Program
+        do {
+            let b = fuzzer.makeBuilder()
+
+            let v0 = b.declarePendingBundleModule(name: "module.mjs", exportNames: ["test"])
+
+            b.buildBundleModuleEntryPoint {
+                let i = b.loadInt(42)
+                evaluator.nextInstructionIsImportant(in: b)
+                b.unary(.BitwiseNot, i)
+            }
+
+            b.buildPendingBundleModule(moduleVariable: v0) {
+                let v1 = b.loadInt(1337)
+                b.exportVariables(variables: [v1], exportNames: ["test"])
+            }
+
+            originalProgram = b.finalize()
+        }
+
+        // Build expected output program.
+        var expectedProgram: Program
+        do {
+            let b = fuzzer.makeBuilder()
+
+            b.buildBundleModuleEntryPoint {
+                let i = b.loadInt(42)
+                b.unary(.BitwiseNot, i)
+            }
+
+            expectedProgram = b.finalize()
+        }
 
         // Perform minimization and check that the two programs are equal.
         let actualProgram = minimize(originalProgram, with: fuzzer)
@@ -2361,6 +2450,130 @@ class MinimizerTests: XCTestCase {
 
     }
 
+    func testWasmTypeGroupUnusedSubType() throws {
+        let evaluator = EvaluatorForMinimizationTests()
+        let fuzzer = makeMockFuzzer(evaluator: evaluator)
+        let b = fuzzer.makeBuilder()
+
+        // Build input program to be minimized.
+        do {
+            let typeGroup = b.wasmDefineTypeGroup {
+                let v0 = b.wasmDefineArrayType(elementType: .wasmi32, mutability: true)
+                let v1 = b.wasmDefineArrayType(
+                    elementType: .wasmi32, mutability: true, superTypeDef: v0)
+                return [v0, v1]
+            }
+
+            b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) { function, label, args in
+                    let constOne = function.consti32(1)
+                    let constZero = function.consti32(0)
+                    evaluator.nextInstructionIsImportant(in: b)
+                    let array = function.wasmArrayNewDefault(
+                        arrayType: typeGroup[0], size: constOne)
+                    // Not important array, this should make the sub type unused and then being
+                    // removed from the type group.
+                    let _ = function.wasmArrayNewDefault(arrayType: typeGroup[1], size: constOne)
+                    evaluator.nextInstructionIsImportant(in: b)
+                    let element = function.wasmArrayGet(array: array, index: constZero)
+                    evaluator.nextInstructionIsImportant(in: b)
+                    return [element]
+                }
+            }
+        }
+        let originalProgram = b.finalize()
+
+        // Build expected output program.
+        do {
+            let typeGroup = b.wasmDefineTypeGroup {
+                return [b.wasmDefineArrayType(elementType: .wasmi32, mutability: true)]
+            }
+
+            b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) { function, label, args in
+                    let constOne = function.consti32(1)
+                    let constZero = function.consti32(0)
+                    let array = function.wasmArrayNewDefault(
+                        arrayType: typeGroup[0], size: constOne)
+                    let element = function.wasmArrayGet(array: array, index: constZero)
+                    return [element]
+                }
+            }
+        }
+        let expectedProgram = b.finalize()
+
+        // Perform minimization and check that the two programs are equal.
+        let actualProgram = minimize(originalProgram, with: fuzzer)
+        XCTAssertEqual(
+            expectedProgram, actualProgram,
+            "Expected:\n\(FuzzILLifter().lift(expectedProgram.code))\n\n"
+                + "Actual:\n\(FuzzILLifter().lift(actualProgram.code))")
+
+    }
+
+    func testWasmTypeGroupUnusedSuperType() throws {
+        let evaluator = EvaluatorForMinimizationTests()
+        let fuzzer = makeMockFuzzer(evaluator: evaluator)
+        let b = fuzzer.makeBuilder()
+
+        // Build input program to be minimized.
+        do {
+            let typeGroup = b.wasmDefineTypeGroup {
+                let v0 = b.wasmDefineArrayType(elementType: .wasmi32, mutability: true)
+                let v1 = b.wasmDefineArrayType(
+                    elementType: .wasmi32, mutability: true, superTypeDef: v0)
+                return [v0, v1]
+            }
+
+            b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) { function, label, args in
+                    let constOne = function.consti32(1)
+                    let constZero = function.consti32(0)
+                    // Not important array, this should make the super type unused and then being
+                    // removed from the type group, because the sub type is the only user of the
+                    // super type.
+                    let _ = function.wasmArrayNewDefault(
+                        arrayType: typeGroup[0], size: constOne)
+                    evaluator.nextInstructionIsImportant(in: b)
+                    let array = function.wasmArrayNewDefault(
+                        arrayType: typeGroup[1], size: constOne)
+                    evaluator.nextInstructionIsImportant(in: b)
+                    let element = function.wasmArrayGet(array: array, index: constZero)
+                    evaluator.nextInstructionIsImportant(in: b)
+                    return [element]
+                }
+            }
+        }
+        let originalProgram = b.finalize()
+
+        // Build expected output program.
+        do {
+            let typeGroup = b.wasmDefineTypeGroup {
+                return [b.wasmDefineArrayType(elementType: .wasmi32, mutability: true)]
+            }
+
+            b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) { function, label, args in
+                    let constOne = function.consti32(1)
+                    let constZero = function.consti32(0)
+                    let array = function.wasmArrayNewDefault(
+                        arrayType: typeGroup[0], size: constOne)
+                    let element = function.wasmArrayGet(array: array, index: constZero)
+                    return [element]
+                }
+            }
+        }
+        let expectedProgram = b.finalize()
+
+        // Perform minimization and check that the two programs are equal.
+        let actualProgram = minimize(originalProgram, with: fuzzer)
+        XCTAssertEqual(
+            expectedProgram, actualProgram,
+            "Expected:\n\(FuzzILLifter().lift(expectedProgram.code))\n\n"
+                + "Actual:\n\(FuzzILLifter().lift(actualProgram.code))")
+
+    }
+
     func testWasmTypeGroupTypeOnlyUsedInDependency() throws {
         let evaluator = EvaluatorForMinimizationTests()
         let fuzzer = makeMockFuzzer(evaluator: evaluator)
@@ -2745,5 +2958,43 @@ class MinimizerTests: XCTestCase {
             originalProgram, actualProgram,
             "Expected:\n\(FuzzILLifter().lift(originalProgram.code))\n\n"
                 + "Actual:\n\(FuzzILLifter().lift(actualProgram.code))")
+    }
+
+    func testWasmArrayNewFixedReduction() {
+        let evaluator = EvaluatorForMinimizationTests()
+        let fuzzer = makeMockFuzzer(evaluator: evaluator)
+        let b = fuzzer.makeBuilder()
+
+        evaluator.operationIsImportant(WasmArrayGet.self)
+
+        let arrayDef = b.wasmDefineTypeGroup {
+            return [b.wasmDefineArrayType(elementType: ILType.wasmi32, mutability: true)]
+        }[0]
+        b.buildWasmModule { module in
+            module.addWasmFunction(with: [] => [.wasmi32]) { fn, label, params in
+                let i1 = fn.consti32(1)
+                let i2 = fn.consti32(2)
+                let i3 = fn.consti32(3)
+
+                let array = fn.wasmArrayNewFixed(arrayType: arrayDef, elements: [i1, i2, i3])
+                return [fn.wasmArrayGet(array: array, index: fn.consti32(0))]
+            }
+        }
+
+        let originalProgram = b.finalize()
+
+        let expectedArrayDef = b.wasmDefineTypeGroup {
+            return [b.wasmDefineArrayType(elementType: ILType.wasmi32, mutability: true)]
+        }[0]
+        b.buildWasmModule { module in
+            module.addWasmFunction(with: [] => [.wasmi32]) { fn, label, params in
+                let array = fn.wasmArrayNewFixed(arrayType: expectedArrayDef, elements: [])
+                return [fn.wasmArrayGet(array: array, index: fn.consti32(0))]
+            }
+        }
+        let expectedProgram = b.finalize()
+
+        let actualProgram = minimize(originalProgram, with: fuzzer)
+        XCTAssertEqual(expectedProgram, actualProgram)
     }
 }

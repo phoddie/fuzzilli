@@ -15,6 +15,8 @@
 syntax = "proto3";
 package fuzzilli.protobuf;
 
+message Empty {}
+
 // Parameters used by function definitions, not an operation by itself.
 message Parameters {
     uint32 count = 1;
@@ -560,25 +562,9 @@ message Dup {
 message Reassign {
 }
 
-message DestructArray {
-    repeated int32 indices = 1;
-    bool lastIsRest = 2;
-}
 
-message DestructArrayAndReassign {
-    repeated int32 indices = 1;
-    bool lastIsRest = 2;
-}
 
-message DestructObject {
-    repeated string properties = 1;
-    bool hasRestElement = 2;
-}
 
-message DestructObjectAndReassign {
-    repeated string properties = 1;
-    bool hasRestElement = 2;
-}
 
 enum Comparator {
     EQUAL = 0;
@@ -758,17 +744,20 @@ message BeginForLoop {
     }
     enum HeaderType {
         SIMPLE = 0;
-        ARRAY_DESTRUCT = 1;
-        OBJECT_DESTRUCT = 2;
+        DESTRUCT = 1;
+    }
+    enum UsingType {
+        NONE = 0;
+        USING = 1;
+        AWAIT_USING = 2;
     }
 
     ForInOfLoopType loopType = 1;
     bool isAsync = 2;
     HeaderType headerType = 3;
 
-    repeated int32 indices = 4;
-    repeated string properties = 5;
-    bool hasRestElement = 6;
+    UsingType usingType = 7;
+    FuzzILDestructuringPattern pattern = 8;
 }
 
 message BeginRepeatLoop {
@@ -1136,6 +1125,7 @@ message WasmStoreGlobal {
 }
 
 message WasmTableGet {
+  WasmILType elementType = 1;
 }
 
 message WasmTableSet {
@@ -1155,6 +1145,15 @@ message WasmCallIndirect {
 message WasmCallDirect {
   int32 parameterCount = 1;
   int32 outputCount = 2;
+}
+
+message WasmCallRef {
+  int32 parameterCount = 1;
+  int32 outputCount = 2;
+}
+
+message WasmReturnCallRef {
+  int32 parameterCount = 1;
 }
 
 message WasmReturnCallDirect {
@@ -1484,6 +1483,8 @@ message WasmEndTypeGroup {
 message WasmDefineSignatureType {
     repeated WasmILType parameterTypes = 1;
     repeated WasmILType outputTypes = 2;
+    bool hasSuperType = 3;
+    bool isFinal = 4;
 }
 
 message WasmDefineAdHocSignatureType {
@@ -1499,6 +1500,8 @@ message WasmDefineAdHocModuleSignatureType {
 message WasmDefineArrayType {
     WasmILType elementType = 1;
     bool mutability = 2;
+    bool hasSuperType = 3;
+    bool isFinal = 4;
 }
 
 message WasmStructField {
@@ -1508,6 +1511,8 @@ message WasmStructField {
 
 message WasmDefineStructType {
     repeated WasmStructField fields = 1;
+    bool hasSuperType = 2;
+    bool isFinal = 3;
 }
 
 message WasmDefineForwardOrSelfReference {
@@ -1552,6 +1557,9 @@ message WasmRefNull {
 }
 
 message WasmRefIsNull {
+}
+
+message WasmRefFunc {
 }
 
 message WasmRefEq {
@@ -1779,6 +1787,10 @@ message ImportNamespace {
     bool isDeferred = 1;
 }
 
+message DynamicImport {
+    bool isDeferred = 1;
+}
+
 message BeginBundleModuleEntryPoint {
 }
 
@@ -1790,4 +1802,71 @@ message CreateMap {
     optional string valueGroupName = 2;
 }
 
+message WasmRefAsNonNull {
+}
+
+message FuzzILDestructuringPattern {
+    oneof pattern {
+        ObjectPattern objectPattern = 1;
+        ArrayPattern arrayPattern = 2;
+    }
+
+    message ObjectPattern {
+        repeated ObjectProperty properties = 1;
+        bool hasRestElement = 2;
+    }
+
+    message Target {
+        oneof value {
+            Empty flatBinding = 1;                  // e.g. `[a] = arr` or `{a} = obj`
+            FuzzILDestructuringPattern pattern = 2; // e.g. `[{a}] = arr`
+            string property = 3;                    // e.g. `[obj.prop] = arr`
+            int64 element = 4;                      // e.g. `[arr[0]] = arr`
+            Empty computedProperty = 5;             // e.g. `[obj[key]] = arr`
+            string superProperty = 6;               // e.g. `[super.prop] = arr`
+            int64 superElement = 7;                 // e.g. `[super[0]] = arr`
+            Empty superComputedProperty = 8;        // e.g. `[super[key]] = arr`
+        }
+    }
+
+    message ObjectProperty {
+        // The key is either a known string, or a computed key provided as an input variable
+        oneof key {
+            string stringKey = 1;
+            Empty computedKey = 2;
+        }
+
+        Target target = 3;
+        bool hasDefaultValue = 5;
+    }
+
+    message ArrayPattern {
+        repeated ArrayElement elements = 1;
+        Target restTarget = 2; // Unset means no rest element
+    }
+
+    message ArrayElement {
+        Target target = 1; // Unset means it is an elision (e.g. `[,]`)
+        bool hasDefaultValue = 2;
+    }
+}
+
+message Destruct {
+    FuzzILDestructuringPattern pattern = 1;
+}
+
+message DestructAndReassign {
+    FuzzILDestructuringPattern pattern = 1;
+}
+
+message DeclarePendingBundleModule {
+    string moduleName = 1;
+    repeated string exportNames = 2;
+}
+
+message BeginPendingBundleModule {
+}
+
+message EndPendingBundleModule {
+}
 

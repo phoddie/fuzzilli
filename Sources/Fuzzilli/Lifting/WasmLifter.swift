@@ -561,7 +561,7 @@ public class WasmLifter {
         guard let description else {
             throw WasmLifter.CompileError.missingTypeInformation
         }
-        return Leb128.unsignedEncode(typeDescToIndex[description]!)
+        return Leb128.signedEncode(typeDescToIndex[description]!)
     }
 
     private func encodeType(_ type: ILType, defaultType: ILType? = nil) throws -> Data {
@@ -605,6 +605,14 @@ public class WasmLifter {
     }
 
     private func buildTypeEntry(for desc: WasmTypeDescription, data: inout Data) throws {
+        if let supertype = desc.concreteHeapSupertype {
+            data += [desc.isFinal ? 0x4F : 0x50, 0x01]
+            data += try encodeWasmGCType(supertype)
+        } else if desc is WasmArrayTypeDescription || desc is WasmStructTypeDescription
+            || (desc as? WasmSignatureTypeDescription)?.isAdHoc == false
+        {
+            data += [desc.isFinal ? 0x4F : 0x50, 0x00]
+        }
         if let arrayDesc = desc as? WasmArrayTypeDescription {
             data += [0x5E]
             data += try encodeType(arrayDesc.elementType)
@@ -1950,6 +1958,16 @@ public class WasmLifter {
             let functionRef = wasmInstruction.input(0)
             return Data([0x10])
                 + Leb128.unsignedEncode(try resolveIdx(ofType: .function, for: functionRef))
+        case .wasmCallRef(_):
+            let functionRef = wasmInstruction.inputs.last!
+            let typeDesc = typer.getTypeDescription(of: functionRef)
+            let sigIndex = typeDescToIndex[typeDesc]!
+            return Data([0x14]) + Leb128.unsignedEncode(sigIndex)
+        case .wasmReturnCallRef(_):
+            let functionRef = wasmInstruction.inputs.last!
+            let typeDesc = typer.getTypeDescription(of: functionRef)
+            let sigIndex = typeDescToIndex[typeDesc]!
+            return Data([0x15]) + Leb128.unsignedEncode(sigIndex)
         case .wasmReturnCallDirect(_):
             let functionRef = wasmInstruction.input(0)
             return Data([0x12])
@@ -2454,6 +2472,12 @@ public class WasmLifter {
             return try Data([0xD0]) + encodeHeapType(typer.type(of: wasmInstruction.output))
         case .wasmRefIsNull(_):
             return Data([0xD1])
+        case .wasmRefAsNonNull(_):
+            return Data([0xD4])
+        case .wasmRefFunc(_):
+            let functionRef = wasmInstruction.input(0)
+            return Data([0xD2])
+                + Leb128.unsignedEncode(try resolveIdx(ofType: .function, for: functionRef))
         case .wasmRefEq(_):
             return Data([0xD3])
         case .wasmRefI31(let op):

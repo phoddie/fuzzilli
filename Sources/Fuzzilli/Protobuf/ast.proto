@@ -40,6 +40,16 @@ enum VariableDeclarationKind {
 }
 
 message VariableDeclarator {
+    oneof id {
+        string name = 1;
+        ObjectPattern objectPattern = 3;
+        ArrayPattern arrayPattern = 4;
+    }
+    // The value is optional
+    Expression value = 2;
+}
+
+message SimpleVariableDeclarator {
     string name = 1;
     // The value is optional
     Expression value = 2;
@@ -57,7 +67,7 @@ enum DisposableVariableDeclarationKind {
 
 message DisposableVariableDeclaration {
     DisposableVariableDeclarationKind kind = 1;
-    repeated VariableDeclarator declarations = 2;
+    repeated SimpleVariableDeclarator declarations = 2;
 }
 
 enum FunctionType {
@@ -196,15 +206,28 @@ message ForLoop {
 }
 
 message ForInLoop {
-    VariableDeclarator left = 1;
+    oneof left {
+        SimpleVariableDeclarator declaration = 1;
+        LValue lvalue = 4;
+    }
     Expression right = 2;
     Statement body = 3;
 }
 
 message ForOfLoop {
-    VariableDeclarator left = 1;
+    enum UsingType {
+        NONE = 0;
+        USING = 1;
+        AWAIT_USING = 2;
+    }
+    oneof left {
+        VariableDeclarator declaration = 1;
+        LValue lvalue = 8;
+    }
     Expression right = 2;
     Statement body = 3;
+    bool isAsync = 6;
+    UsingType usingType = 7;
 }
 
 message BreakStatement {
@@ -322,9 +345,18 @@ message NullLiteral {
 message ThisExpression {
 }
 
+message LValue {
+    oneof value {
+        Identifier identifier = 1;
+        MemberExpression memberExpression = 2;
+        SuperMemberExpression superMemberExpression = 3;
+        DestructuringPattern destructuringPattern = 4;
+    }
+}
+
 message AssignmentExpression {
     string operator = 1;
-    Expression lhs = 2;
+    LValue lvalue = 4;
     Expression rhs = 3;
 }
 
@@ -502,4 +534,32 @@ message Expression {
         CallSuperConstructor callSuperConstructor = 28;
         ClassExpression classExpression = 29;
     }
+}
+
+message DestructuringPattern {
+    oneof pattern {
+        ObjectPattern objectPattern = 1;
+        ArrayPattern arrayPattern = 2;
+    }
+}
+
+message ObjectPattern {
+    repeated ObjectPatternProperty properties = 1;
+    LValue restTarget = 2;
+}
+
+message ObjectPatternProperty {
+    PropertyKey key = 1;
+    LValue target = 2;
+    Expression defaultValue = 5;
+}
+
+message ArrayPattern {
+    repeated ArrayPatternElement elements = 1;
+    LValue restTarget = 2;
+}
+
+message ArrayPatternElement {
+    LValue target = 1;
+    Expression defaultValue = 3;
 }

@@ -308,11 +308,13 @@ public class JavaScriptEnvironment: ComponentBase {
     public static let CustomPropertyNames = ["a", "b", "c", "d", "e", "f", "!", "42"]
     public static let CustomMethodNames = ["m", "n", "o", "?", "67", "valueOf", "toString"]
     public static let CustomPrivateMethodNames = ["m", "n", "o", "p"]
+    public static let CustomIdentifierNames = ["a", "b", "c", "d", "e", "f"]
 
     public private(set) var builtins = Set<String>()
     public let customProperties = Set<String>(CustomPropertyNames)
     public let customMethods = Set<String>(CustomMethodNames)
     public let customPrivateMethods = Set<String>(CustomPrivateMethodNames)
+    public let customIdentifiers = Set<String>(CustomIdentifierNames)
     public private(set) var builtinProperties = Set<String>()
     public private(set) var builtinMethods = Set<String>()
 
@@ -794,6 +796,9 @@ public class JavaScriptEnvironment: ComponentBase {
         logger.info(
             "Have \(customPrivateMethods.count) custom private method names: \(customPrivateMethods.sorted())"
         )
+        logger.info(
+            "Have \(customIdentifiers.count) custom identifier names: \(customIdentifiers.sorted())"
+        )
     }
 
     func checkConstructorAvailability() {
@@ -1011,7 +1016,7 @@ public class JavaScriptEnvironment: ComponentBase {
     }
 
     public func type(ofGroup groupName: String) -> ILType {
-        if let type = groups[groupName]?.instanceType {
+        if let type = getGroup(groupName)?.instanceType {
             return type
         } else {
             logger.warning("Missing type for group \(groupName)")
@@ -1021,7 +1026,7 @@ public class JavaScriptEnvironment: ComponentBase {
 
     public func type(ofProperty propertyName: String, on baseType: ILType) -> ILType {
         if let groupName = baseType.group {
-            if let group = groups[groupName] {
+            if let group = getGroup(groupName) {
                 if let type = group.properties[propertyName] {
                     return type
                 }
@@ -1039,7 +1044,7 @@ public class JavaScriptEnvironment: ComponentBase {
 
     public func signatures(ofMethod methodName: String, on baseType: ILType) -> [Signature] {
         if let groupName = baseType.group {
-            if let group = groups[groupName] {
+            if let group = getGroup(groupName) {
                 if let signatures = group.methods[methodName] {
                     return signatures
                 }
@@ -1079,7 +1084,7 @@ public class JavaScriptEnvironment: ComponentBase {
 
     // If the object group refers to a constructor, get its path.
     public func getPathIfConstructor(ofGroup groupName: String) -> [String]? {
-        guard let group = groups[groupName] else {
+        guard let group = getGroup(groupName) else {
             return nil
         }
         return group.constructorPath
@@ -1115,6 +1120,21 @@ public class JavaScriptEnvironment: ComponentBase {
 
     func isValidPropertyIndex(_ name: String) -> Bool {
         return (try? ValidationRegexes.propertyIndex.wholeMatch(in: name)) != nil
+    }
+
+    private func getGroup(_ groupName: String) -> ObjectGroup? {
+        if let group = groups[groupName] {
+            return group
+        }
+
+        // Specific well-known symbols (e.g., Symbol.dispose) use their own distinct group names
+        // (like "Symbol.dispose") so the type system can differentiate them. This maps them back to the registered
+        // "Symbol" ObjectGroup for property and method lookups.
+        if groupName.hasPrefix("Symbol.") {
+            return groups["Symbol"]
+        }
+
+        return nil
     }
 }
 
@@ -1269,6 +1289,10 @@ extension ILType {
     /// Type of a JavaScript Symbol.
     public static let jsSymbol = ILType.object(ofGroup: "Symbol", withProperties: ["description"])
 
+    public static func jsSymbol(ofGroup group: String) -> ILType {
+        return ILType.object(ofGroup: group, withProperties: ["description"])
+    }
+
     /// Type of a JavaScript array.
     public static let jsArray = createJsArrayType(ofElementType: nil)
 
@@ -1289,6 +1313,16 @@ extension ILType {
                 ])
     }
 
+    /// A type that can be disposed.
+    public static func disposable() -> ILType {
+        return .object(withSymbolMethods: ["Symbol.dispose"])
+    }
+
+    /// A type that can be asynchronously disposed.
+    public static func asyncDisposable() -> ILType {
+        return .object(withSymbolMethods: ["Symbol.asyncDispose"])
+    }
+
     /// Type of a JavaScript function's arguments object.
     public static let jsArguments =
         ILType.iterable()
@@ -1301,7 +1335,7 @@ extension ILType {
             ofGroup: "Iterator", withProperties: ["value", "done"],
             withMethods: [
                 "next", "return", "throw", "map", "filter", "take", "drop", "flatMap", "reduce",
-                "toArray", "forEach", "some", "every", "find", "join",
+                "toArray", "forEach", "some", "every", "find", "join", "includes",
             ])
 
     /// Type of the JavaScript Iterator constructor builtin.
@@ -2205,6 +2239,7 @@ extension ObjectGroup {
             "every": [.function()] => .boolean,
             "find": [.function()] => .jsAnything,
             "join": [.string] => .jsString,
+            "includes": [.jsAnything, .opt(.integer)] => .boolean,
         ]
     )
 
@@ -2924,8 +2959,8 @@ extension ObjectGroup {
             "species": .jsSymbol,
             "toPrimitive": .jsSymbol,
             "toStringTag": .jsSymbol,
-            "dispose": .jsSymbol,
-            "asyncDispose": .jsSymbol,
+            "dispose": .jsSymbol(ofGroup: "Symbol.dispose"),
+            "asyncDispose": .jsSymbol(ofGroup: "Symbol.asyncDispose"),
         ],
         methods: [
             "for": [.string] => .jsSymbol,
