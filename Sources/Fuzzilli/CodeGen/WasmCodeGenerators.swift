@@ -25,7 +25,7 @@ public let WasmCodeGenerators: [CodeGenerator] = [
     CodeGenerator(
         "WasmGlobalGenerator",
         inContext: .single(.javascript),
-        produces: [.object(ofGroup: "WasmGlobal")]
+        produces: [.object(ofGroup: "WasmGlobal")], useInPrefix: true
     ) { b in
         b.createWasmGlobal(
             value: b.randomWasmGlobal(forContext: .javascript), isMutable: probability(0.5))
@@ -34,7 +34,7 @@ public let WasmCodeGenerators: [CodeGenerator] = [
     CodeGenerator(
         "WasmMemoryGenerator",
         inContext: .single(.javascript),
-        produces: [.object(ofGroup: "WasmMemory")]
+        produces: [.object(ofGroup: "WasmMemory")], useInPrefix: true
     ) { b in
         let minPages = Int.random(in: 0..<10)
         let isShared = probability(0.5)
@@ -48,7 +48,7 @@ public let WasmCodeGenerators: [CodeGenerator] = [
     CodeGenerator(
         "WasmTableGenerator",
         inContext: .single(.javascript),
-        produces: [.object(ofGroup: "WasmTable")]
+        produces: [.object(ofGroup: "WasmTable")], useInPrefix: true
     ) { b in
         let elementType: ILType = chooseUniform(from: [
             .wasmFuncRef(), .wasmExternRef(), .wasmI31Ref(), .wasmAnyRef(), .wasmEqRef(),
@@ -67,7 +67,7 @@ public let WasmCodeGenerators: [CodeGenerator] = [
     CodeGenerator(
         "WasmTagGenerator",
         inContext: .single(.javascript),
-        produces: [.object(ofGroup: "WasmTag")]
+        produces: [.object(ofGroup: "WasmTag")], useInPrefix: true
     ) { b in
         if probability(0.5) {
             b.createWasmJSTag()
@@ -2489,29 +2489,7 @@ private let wasmArrayTypeGenerator = GeneratorStub(
             return false
         })
     {
-        let superTypeDesc =
-            b.type(of: superType).wasmTypeDefinition!.description
-            as! WasmArrayTypeDescription
-        let elementType = superTypeDesc.elementType
-
-        if case .Index(let target) = elementType.wasmReferenceType?.kind {
-            let indexType = b.getWasmTypeDef(for: elementType)
-            b.wasmDefineArrayType(
-                elementType: .wasmRef(
-                    .Index(), nullability: elementType.wasmReferenceType!.nullability),
-                mutability: superTypeDesc.mutability,
-                indexType: indexType,
-                superTypeDef: superType,
-                isFinal: isFinal
-            )
-        } else {
-            b.wasmDefineArrayType(
-                elementType: elementType,
-                mutability: superTypeDesc.mutability,
-                superTypeDef: superType,
-                isFinal: isFinal
-            )
-        }
+        b.generateSubtype(for: superType, isFinal: isFinal)
         return
     }
 
@@ -2562,34 +2540,7 @@ private let wasmStructTypeGenerator = GeneratorStub(
             return false
         })
     {
-        let superTypeDesc =
-            b.type(of: superType).wasmTypeDefinition!.description
-            as! WasmStructTypeDescription
-        let fields = superTypeDesc.fields
-
-        var indexTypes: [Variable] = []
-        var cleanFields: [WasmStructTypeDescription.Field] = []
-        for field in fields {
-            if case .Index(let target) = field.type.wasmReferenceType?.kind {
-                let indexType = b.getWasmTypeDef(for: field.type)
-                indexTypes.append(indexType)
-                cleanFields.append(
-                    .init(
-                        type: .wasmRef(
-                            .Index(), nullability: field.type.wasmReferenceType!.nullability),
-                        mutability: field.mutability
-                    ))
-            } else {
-                cleanFields.append(field)
-            }
-        }
-
-        b.wasmDefineStructType(
-            fields: cleanFields,
-            indexTypes: indexTypes,
-            superTypeDef: superType,
-            isFinal: isFinal
-        )
+        b.generateSubtype(for: superType, isFinal: isFinal)
         return
     }
 
@@ -2617,31 +2568,7 @@ private let wasmSignatureTypeGenerator = GeneratorStub(
             return false
         })
     {
-        let superTypeDesc =
-            b.type(of: superType).wasmTypeDefinition!.description
-            as! WasmSignatureTypeDescription
-        let superSignature = superTypeDesc.signature
-
-        var indexTypes: [Variable] = []
-        let unlinkTypes = { (types: [ILType]) -> [ILType] in
-            return types.map { type in
-                if case .Index(let targetDescWrapper) = type.wasmReferenceType?.kind {
-                    let indexType = b.getWasmTypeDef(for: type)
-                    indexTypes.append(indexType)
-                    return .wasmRef(.Index(), nullability: type.wasmReferenceType!.nullability)
-                } else {
-                    return type
-                }
-            }
-        }
-
-        let unlinkedSignature =
-            unlinkTypes(superSignature.parameterTypes)
-            => unlinkTypes(superSignature.outputTypes)
-
-        b.wasmDefineSignatureType(
-            signature: unlinkedSignature, indexTypes: indexTypes,
-            superTypeDef: superType, isFinal: isFinal)
+        b.generateSubtype(for: superType, isFinal: isFinal)
         return
     }
 

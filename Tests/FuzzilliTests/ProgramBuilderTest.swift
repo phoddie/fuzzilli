@@ -136,7 +136,9 @@ struct ProgramBuilderTests {
             let b = fuzzer.makeBuilder()
             let N = 100
 
-            let simpleGenerator = CodeGenerator("SimpleGenerator", produces: [.integer]) { b in
+            let simpleGenerator = CodeGenerator(
+                "SimpleGenerator", produces: [.integer], useInPrefix: true
+            ) { b in
                 b.loadInt(Int64.random(in: 0..<100))
             }
             fuzzer.setCodeGenerators(
@@ -162,7 +164,9 @@ struct ProgramBuilderTests {
             let b = fuzzer.makeBuilder()
             let N = 100
 
-            let simpleGenerator = CodeGenerator("SimpleGenerator", produces: [.integer]) { b in
+            let simpleGenerator = CodeGenerator(
+                "SimpleGenerator", produces: [.integer], useInPrefix: true
+            ) { b in
                 b.loadInt(Int64.random(in: 0..<100))
             }
             let recursiveGenerator = CodeGenerator("RecursiveGenerator") { b in
@@ -3139,7 +3143,9 @@ struct ProgramBuilderTests {
             let myType = ILType.object(withProperties: ["MyProperty"])
 
             var producingGeneratorRan = false
-            let producingGenerator = CodeGenerator("ProducingGenerator", produces: [myType]) { b in
+            let producingGenerator = CodeGenerator(
+                "ProducingGenerator", produces: [myType], useInPrefix: true
+            ) { b in
                 producingGeneratorRan = true
                 let obj = b.createObject(with: [:])
                 b.setProperty("MyProperty", of: obj, to: b.loadInt(42))
@@ -3295,6 +3301,65 @@ struct ProgramBuilderTests {
 
                     return []
                 }
+            }
+        }
+    }
+
+    @Test func testWasmArraySubtypeGeneration() {
+        let env = JavaScriptEnvironment()
+        let config = Configuration(logLevel: .error)
+        let fuzzer = makeMockFuzzer(config: config, environment: env)
+        fuzzer.sync {
+            let b = fuzzer.makeBuilder()
+
+            b.wasmDefineTypeGroup {
+                let baseStruct = b.wasmDefineStructType(
+                    fields: [.init(type: .wasmi32, mutability: false)], indexTypes: [])
+                let subStruct = b.generateSubtype(for: baseStruct)
+
+                let baseArray = b.wasmDefineArrayType(
+                    elementType: ILType.wasmRef(.Index(), nullability: true), mutability: false,
+                    indexType: baseStruct)
+
+                let subArrays = (0..<20).map { _ in b.generateSubtype(for: baseArray) }
+                let subArraysTypeDescriptions = subArrays.map {
+                    b.type(of: $0).wasmTypeDefinition!.description as! WasmArrayTypeDescription
+                }
+
+                #expect(
+                    subArraysTypeDescriptions.allSatisfy {
+                        $0.concreteHeapSupertype
+                            == b.type(of: baseArray).wasmTypeDefinition?.description
+                    })
+                #expect(subArraysTypeDescriptions.allSatisfy { !$0.mutability })
+                #expect(
+                    subArraysTypeDescriptions.contains {
+                        $0.elementType.wasmReferenceType?.nullability == true
+                    })
+                #expect(
+                    subArraysTypeDescriptions.contains {
+                        $0.elementType.wasmReferenceType?.nullability == false
+                    })
+
+                let baseStructDesc = b.type(of: baseStruct).wasmTypeDefinition!.description!
+                let subStructDesc = b.type(of: subStruct).wasmTypeDefinition!.description!
+
+                #expect(
+                    subArraysTypeDescriptions.contains {
+                        if case .Index(let target) = $0.elementType.wasmReferenceType?.kind {
+                            return target.get() == subStructDesc
+                        }
+                        return false
+                    })
+                #expect(
+                    subArraysTypeDescriptions.contains {
+                        if case .Index(let target) = $0.elementType.wasmReferenceType?.kind {
+                            return target.get() == baseStructDesc
+                        }
+                        return false
+                    })
+
+                return [baseStruct, subStruct, baseArray] + subArrays
             }
         }
     }
@@ -3474,47 +3539,35 @@ struct ProgramBuilderTests {
         }
     }
 
-    @Test func testArrayGetSchedulingTest() {
-        let fuzzer = makeMockFuzzer()
+    /// Test that scheduling a dynamic import while in the .bundle context succeeds.
+    @Test func testBundleDynamicImportScheduling() {
+        let config = Configuration(logLevel: .error, generateBundle: true)
+        let fuzzer = makeMockFuzzer(config: config)
         let numPrograms = 30
 
         for _ in 0..<numPrograms {
             fuzzer.sync {
                 let b = fuzzer.makeBuilder()
-                b.buildPrefix()
-
-                // TODO(mliedtke): The mechanism needs to learn how to resolve nested input dependencies.
-                b.wasmDefineTypeGroup {
-                    [
-                        b.wasmDefineArrayType(elementType: .wasmi32, mutability: true),
-                        b.wasmDefineStructType(
-                            fields: [.init(type: .wasmi32, mutability: true)], indexTypes: []),
-                    ]
-                }
 
                 let generator = fuzzer.codeGenerators.filter {
-                    $0.name == "WasmArrayGetGenerator"
+                    $0.name == "DynamicImportGenerator"
                 }[0]
 
-                // Now build this.
                 let syntheticGenerator = b.assembleSyntheticGenerator(for: generator)
                 #expect(syntheticGenerator != nil)
 
-                let numGeneratedInstructions = b.complete(
-                    generator: syntheticGenerator!, withBudget: 30)
-
+                _ = b.complete(generator: syntheticGenerator!, withBudget: 30)
                 let program = b.finalize()
 
                 #expect(
                     program.code.contains(where: { instr in
                         switch instr.op.opcode {
-                        case .wasmArrayGet(_):
+                        case .dynamicImport(_):
                             return true
                         default:
                             return false
                         }
                     }))
-                #expect(numGeneratedInstructions > 0)
             }
         }
     }

@@ -2285,11 +2285,11 @@ public class ProgramBuilder {
         build(n: budget, by: .generating)
     }
 
-    /// Run ValueGenerators until we have created at least N new variables.
+    /// Run generators marked with "useInPrefix" until we have created at least N new variables.
     /// Returns both the number of generated instructions and of newly created variables.
     @discardableResult
     public func buildValues(_ n: Int) -> (generatedInstructions: Int, generatedVariables: Int) {
-        var valueGenerators = fuzzer.codeGenerators.filter({ $0.isValueGenerator })
+        var valueGenerators = fuzzer.codeGenerators.filter({ $0.useInPrefix })
         // Filter for the current context
         valueGenerators = valueGenerators.filter { context.contains($0.requiredContext) }
 
@@ -6642,6 +6642,112 @@ public class ProgramBuilder {
             return emit(
                 WasmDefineAdHocModuleSignatureType(signature: signature), withInputs: indexTypes
             ).output
+        }
+    }
+
+    @discardableResult
+    public func generateSubtype(for superType: Variable, isFinal: Bool = false) -> Variable {
+        guard let superTypeDesc = type(of: superType).wasmTypeDefinition?.description else {
+            fatalError("superType is not a WasmTypeDefinition")
+        }
+
+        switch superTypeDesc {
+        case let arrayDesc as WasmArrayTypeDescription:
+            var elementType = arrayDesc.elementType
+            var indexType: Variable? = nil
+
+            if let refType = elementType.wasmReferenceType {
+                let originalNullability = refType.nullability
+                // If the element is immutable, the subtype can refine the element type to be non-nullable.
+                let newNullability =
+                    (!arrayDesc.mutability && originalNullability)
+                    ? probability(0.5)
+                    : originalNullability
+
+                switch refType.kind {
+                case .Index:
+                    indexType = self.getWasmTypeDef(for: elementType)
+                    elementType = .wasmRef(
+                        .Index(), nullability: newNullability)
+
+                    let indexTypeDesc = type(of: indexType!).wasmTypeDefinition!.description!
+                    if !arrayDesc.mutability,
+                        !indexTypeDesc.hasUnresolvedSelfReferences(),
+                        !indexTypeDesc.isFinal
+                    {
+                        indexType = self.findVariable(satisfying: {
+                            guard let desc = self.type(of: $0).wasmTypeDefinition?.description
+                            else { return false }
+                            return indexTypeDesc.subsumes(desc)
+                        })!
+                    }
+                case .Abstract:
+                    // TODO(bettscheider): Support generating an index type as a subtype for abstract reference types.
+                    elementType = .wasmRef(refType.kind, nullability: newNullability)
+                }
+            }
+
+            return self.wasmDefineArrayType(
+                elementType: elementType,
+                mutability: arrayDesc.mutability,
+                indexType: indexType,
+                superTypeDef: superType,
+                isFinal: isFinal
+            )
+
+        // Generate a subtype as a copy of the super type
+        // TODO(bettscheider): Support non-identical subtype generation
+        case let structDesc as WasmStructTypeDescription:
+            var indexTypes: [Variable] = []
+            var cleanFields: [WasmStructTypeDescription.Field] = []
+            for field in structDesc.fields {
+                if case .Index = field.type.wasmReferenceType?.kind {
+                    let indexType = self.getWasmTypeDef(for: field.type)
+                    indexTypes.append(indexType)
+                    cleanFields.append(
+                        .init(
+                            type: .wasmRef(
+                                .Index(), nullability: field.type.wasmReferenceType!.nullability),
+                            mutability: field.mutability
+                        ))
+                } else {
+                    cleanFields.append(field)
+                }
+            }
+
+            return self.wasmDefineStructType(
+                fields: cleanFields,
+                indexTypes: indexTypes,
+                superTypeDef: superType,
+                isFinal: isFinal
+            )
+
+        // Generate a subtype as a copy of the super type
+        // TODO(bettscheider): Support non-identical subtype generation
+        case let sigDesc as WasmSignatureTypeDescription:
+            var indexTypes: [Variable] = []
+            let unlinkTypes = { (types: [ILType]) -> [ILType] in
+                return types.map { type in
+                    if case .Index = type.wasmReferenceType?.kind {
+                        let indexType = self.getWasmTypeDef(for: type)
+                        indexTypes.append(indexType)
+                        return .wasmRef(.Index(), nullability: type.wasmReferenceType!.nullability)
+                    } else {
+                        return type
+                    }
+                }
+            }
+
+            let unlinkedSignature =
+                unlinkTypes(sigDesc.signature.parameterTypes)
+                => unlinkTypes(sigDesc.signature.outputTypes)
+
+            return self.wasmDefineSignatureType(
+                signature: unlinkedSignature, indexTypes: indexTypes,
+                superTypeDef: superType, isFinal: isFinal)
+
+        default:
+            fatalError("Unsupported superType description")
         }
     }
 
