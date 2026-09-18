@@ -184,6 +184,20 @@ private let TextEncoderGenerator = CodeGenerator("TextEncoderGenerator") { b in
     }
 }
 
+// Detaches an existing ArrayBuffer through the detachArrayBuffer host function of xst's fuzzing
+// mode, optionally after creating a view on it, so that subsequent code using the buffer and its
+// views hits detached-buffer paths.
+private let DetachArrayBufferGenerator = CodeGenerator(
+    "DetachArrayBufferGenerator", inputs: .required(.jsArrayBuffer)
+) { b, buffer in
+    if probability(0.5) {
+        let Uint8Array = b.createNamedVariable(forBuiltin: "Uint8Array")
+        b.construct(Uint8Array, withArgs: [buffer])
+    }
+    let detachArrayBuffer = b.createNamedVariable(forBuiltin: "detachArrayBuffer")
+    b.callFunction(detachArrayBuffer, withArgs: [buffer])
+}
+
 // this template taken from V8Profile.swift (with light modifications for XS)
 private let RegExpFuzzer = ProgramTemplate("RegExpFuzzer") { b in
     // Taken from: https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:v8/test/fuzzer/regexp-builtins.cc;l=212;drc=a61b95c63b0b75c1cfe872d9c8cdf927c226046e
@@ -303,7 +317,8 @@ extension ILType {
         + .object(ofGroup: "CompartmentConstructor", withProperties: ["prototype"], withMethods: [])
 
     public static let jsModuleSource = ILType.object(
-        ofGroup: "ModuleSource", withProperties: ["bindings", "needsImport", "needsImportMeta"])
+        ofGroup: "ModuleSource",
+        withProperties: ["bindings", "needsImport", "needsImportMeta", "options"])
 
     public static let jsModuleSourceConstructor =
         ILType.constructor([.opt(.string)] => .jsModuleSource)
@@ -371,6 +386,7 @@ let jsModuleSources = ObjectGroup(
         "bindings": .object(),
         "needsImport": .object(),
         "needsImportMeta": .object(),
+        "options": .object() | .undefined,  // { with: { type: "json" } } for JSON modules, else undefined
     ],
     methods: [:]
 )
@@ -503,8 +519,9 @@ let xsProfile = Profile(
         (CompartmentEvaluateGenerator, 5),
         (UnicodeStringGenerator, 2),
         (ModuleSourceGenerator, 3),
-        (TextDecoderGenerator, 10),
-        (TextEncoderGenerator, 10),
+        (TextDecoderGenerator, 3),
+        (TextEncoderGenerator, 3),
+        (DetachArrayBufferGenerator, 5),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
@@ -519,6 +536,7 @@ let xsProfile = Profile(
         "gc": .function([] => .undefined),
         "memoryFail": .function([.number] => .number),
         "print": .function([.string] => .undefined),
+        "detachArrayBuffer": .function([.plain(.jsArrayBuffer)] => .undefined),
 
         // hardened javascript
         "Compartment": .function(

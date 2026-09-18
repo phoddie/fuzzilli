@@ -1505,7 +1505,8 @@ extension ILType {
 
     /// Type of a JavaScript ArrayBuffer object.
     public static let jsArrayBuffer = ILType.object(
-        ofGroup: "ArrayBuffer", withProperties: ["byteLength", "maxByteLength", "resizable"],
+        ofGroup: "ArrayBuffer",
+        withProperties: ["byteLength", "maxByteLength", "resizable", "detached", "immutable"],
         withMethods: [
             "resize", "slice", "sliceToImmutable", "transfer", "transferToFixedLength",
             "transferToImmutable", "concat",
@@ -1753,7 +1754,7 @@ extension ILType {
             "expm1", "clz32", "cos", "cosh", "exp", "floor", "fround", "f16round", "hypot", "imul",
             "log", "log1p", "log2", "log10", "max", "min", "pow", "random", "round", "sign", "sin",
             "sinh", "sqrt", "sumPrecise", "tan", "tanh", "trunc",
-            "idiv", "idivmod", "imod", "imuldiv", "irem", "irandom",
+            "idiv", "idivmod", "imod", "imuldiv", "irem", "irandom", "mod",
         ])
 
     /// Type of the JavaScript Atomics builtin.
@@ -2654,6 +2655,8 @@ extension ObjectGroup {
             "byteLength": .integer,
             "maxByteLength": .integer,
             "resizable": .boolean,
+            "detached": .boolean,
+            "immutable": .boolean,
         ],
         methods: [
             "resize": [.integer] => .undefined,
@@ -2946,7 +2949,7 @@ extension ObjectGroup {
             ] => .object(),
             "defineProperties": [.object(), .object()] => .object(),
             "entries": [.object()] => .jsArray,
-            "freeze": [.object()] => .object(),
+            "freeze": [.object(), .opt(.boolean)] => .object(),  // XS: second argument freezes deeply
             "fromEntries": [.object()] => .object(),
             "getOwnPropertyDescriptor": [.object(), .string]
                 => .object(withProperties: ["configurable", "writable", "enumerable", "value"]),
@@ -3205,6 +3208,7 @@ extension ObjectGroup {
             "imuldiv": [.jsAnything, .jsAnything, .jsAnything] => .integer,
             "irem": [.jsAnything, .jsAnything] => .integer,
             "irandom": [.jsAnything] => .integer,
+            "mod": [.jsAnything, .jsAnything] => .number,
         ]
     )
 
