@@ -177,8 +177,15 @@ public class Fuzzer {
         return iterations - iterationOfLastInterestingSample
     }
 
+    private final class WeakFuzzerRef {
+        weak var value: Fuzzer?
+        init(_ value: Fuzzer) {
+            self.value = value
+        }
+    }
+
     /// Fuzzer instances can be looked up from a dispatch queue through this key. See below.
-    private static let dispatchQueueKey = DispatchSpecificKey<Fuzzer>()
+    private static let dispatchQueueKey = DispatchSpecificKey<WeakFuzzerRef>()
 
     /// Constructs a new fuzzer instance with the provided components.
     public init(
@@ -221,14 +228,40 @@ public class Fuzzer {
 
         // Register this fuzzer instance with its queue so that it is possible to
         // obtain a reference to the Fuzzer instance when running on its queue.
-        // This creates a reference cycle, but Fuzzer instances aren't expected
-        // to be deallocated, so this is ok.
-        self.queue.setSpecific(key: Fuzzer.dispatchQueueKey, value: self)
+        // A weak reference is used to avoid a retain cycle with the dispatch queue.
+        self.queue.setSpecific(key: Fuzzer.dispatchQueueKey, value: WeakFuzzerRef(self))
+
+        #if DEBUG
+            do {
+                let allNames =
+                    self.codeGenerators.map { $0.name }
+                    + self.mutators.map { $0.name }
+                    + self.programTemplates.map { $0.name }
+                var seen = Set<String>()
+                let duplicateNames = allNames.filter { !seen.insert($0).inserted }
+                assert(
+                    duplicateNames.isEmpty,
+                    "Contributor names must be unique, found duplicates: \(duplicateNames)")
+
+                // Similarly check that all code generator stubs are unique. As the stub stores the
+                // contributor statistics, if a stub is reused across multiple code generators, it
+                // should be recreated each time.
+                let allStubs = self.codeGenerators.flatMap { $0.parts }
+                var seenStubs = Set<ObjectIdentifier>()
+                let duplicateStubs = allStubs.filter {
+                    !seenStubs.insert(ObjectIdentifier($0)).inserted
+                }
+                assert(
+                    duplicateStubs.isEmpty,
+                    "CodeGenerator stubs must be unique, found duplicate: \(duplicateStubs)")
+
+            }
+        #endif
     }
 
     /// Returns the fuzzer for the active DispatchQueue.
     public static var current: Fuzzer? {
-        return DispatchQueue.getSpecific(key: Fuzzer.dispatchQueueKey)
+        return DispatchQueue.getSpecific(key: Fuzzer.dispatchQueueKey)?.value
     }
 
     /// Schedule work on this fuzzer's dispatch queue.
@@ -314,7 +347,8 @@ public class Fuzzer {
 
         // Install a watchdog to monitor the utilization of this instance.
         var lastCheck = Date()
-        timers.scheduleTask(every: 1 * Minutes) {
+        timers.scheduleTask(every: 1 * Minutes) { [weak self] in
+            guard let self = self else { return }
             // Monitor responsiveness
             let now = Date()
             let interval = now.timeIntervalSince(lastCheck)
@@ -640,12 +674,20 @@ public class Fuzzer {
             break
         }
 
-        // Second attempt at fixing the program: enable guards (try-catch) for all guardable operations, then
-        // remove all guards that aren't needed (because no exception is thrown).
+        // Second attempt at fixing the program: enable guards (try-catch) for all guardable operations
         for instr in program.code {
             var newOp = instr.op
             if let op = instr.op as? GuardableOperation {
-                newOp = GuardableOperation.enableGuard(of: op)
+                if !op.isGuarded {
+                    newOp = op.withGuardedState(true)
+                }
+            } else {
+                if let op = newOp as? ReceiverOptionalOperation, !op.isReceiverOptional {
+                    newOp = op.withReceiverOptionalState(true)
+                }
+                if let op = newOp as? CallOptionalOperation, !op.isCallOptional {
+                    newOp = op.withCallOptionalState(true)
+                }
             }
             b.append(Instruction(newOp, inouts: instr.inouts, flags: instr.flags))
         }

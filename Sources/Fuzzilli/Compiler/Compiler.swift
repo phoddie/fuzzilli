@@ -141,8 +141,12 @@ public class JavaScriptCompiler {
                 switch key {
                 case .name(let name):
                     op = ClassAddProperty(
-                        propertyName: name, hasValue: property.hasValue, isStatic: property.isStatic
-                    )
+                        propertyName: name, hasValue: property.hasValue,
+                        isStatic: property.isStatic)
+                case .privateName(let name):
+                    op = ClassAddPrivateProperty(
+                        propertyName: name, hasValue: property.hasValue,
+                        isStatic: property.isStatic)
                 case .index(let index):
                     op = ClassAddElement(
                         index: index, hasValue: property.hasValue, isStatic: property.isStatic)
@@ -158,14 +162,14 @@ public class JavaScriptCompiler {
 
             case .ctor(let constructor):
                 let defaultValues = defaultValuesPerSubroutine.removeLast()
-                let parameters = convertParameters(constructor.parameters)
+                let parameters = try convertParameters(constructor.parameters)
                 let head = emit(
                     BeginClassConstructor(parameters: parameters), withInputs: defaultValues)
 
                 try enterNewScope {
                     var parameters = head.innerOutputs
                     map("this", to: parameters.removeFirst())
-                    mapParameters(constructor.parameters, to: parameters)
+                    try mapParameters(constructor.parameters, to: parameters)
                     for statement in constructor.body {
                         try compileStatement(statement)
                     }
@@ -175,7 +179,9 @@ public class JavaScriptCompiler {
 
             case .method(let method):
                 let defaultValues = defaultValuesPerSubroutine.removeLast()
-                let parameters = convertParameters(method.parameters)
+                let parameters = try convertParameters(method.parameters)
+                let isGenerator = method.type == .generator || method.type == .asyncGenerator
+                let isAsync = method.type == .async || method.type == .asyncGenerator
                 let head: Instruction
 
                 guard let key = method.key.body else {
@@ -185,34 +191,43 @@ public class JavaScriptCompiler {
                 case .name(let name):
                     head = emit(
                         BeginClassMethod(
-                            methodName: name, parameters: parameters, isStatic: method.isStatic),
+                            methodName: name, parameters: parameters, isStatic: method.isStatic,
+                            isGenerator: isGenerator, isAsync: isAsync),
+                        withInputs: defaultValues)
+                case .privateName(let name):
+                    head = emit(
+                        BeginClassPrivateMethod(
+                            methodName: name, parameters: parameters, isStatic: method.isStatic,
+                            isGenerator: isGenerator, isAsync: isAsync),
                         withInputs: defaultValues)
                 case .index(let index):
                     head = emit(
                         BeginClassMethod(
                             methodName: String(index), parameters: parameters,
-                            isStatic: method.isStatic),
+                            isStatic: method.isStatic, isGenerator: isGenerator, isAsync: isAsync),
                         withInputs: defaultValues)
                 case .expression:
                     head = emit(
-                        BeginClassComputedMethod(parameters: parameters, isStatic: method.isStatic),
+                        BeginClassComputedMethod(
+                            parameters: parameters, isStatic: method.isStatic,
+                            isGenerator: isGenerator, isAsync: isAsync),
                         withInputs: [computedKeys.removeLast()] + defaultValues)
                 }
 
                 try enterNewScope {
                     var parameters = head.innerOutputs
                     map("this", to: parameters.removeFirst())
-                    mapParameters(method.parameters, to: parameters)
+                    try mapParameters(method.parameters, to: parameters)
                     for statement in method.body {
                         try compileStatement(statement)
                     }
                 }
 
                 switch key {
-                case .name:
+                case .name, .index:
                     emit(EndClassMethod())
-                case .index:
-                    emit(EndClassMethod())
+                case .privateName:
+                    emit(EndClassPrivateMethod())
                 case .expression:
                     emit(EndClassComputedMethod())
                 }
@@ -225,6 +240,9 @@ public class JavaScriptCompiler {
                 switch key {
                 case .name(let name):
                     head = emit(BeginClassGetter(propertyName: name, isStatic: getter.isStatic))
+                case .privateName(let name):
+                    head = emit(
+                        BeginClassPrivateGetter(propertyName: name, isStatic: getter.isStatic))
                 case .index(let index):
                     head = emit(
                         BeginClassGetter(propertyName: String(index), isStatic: getter.isStatic))
@@ -244,6 +262,8 @@ public class JavaScriptCompiler {
                 switch key {
                 case .name, .index:
                     emit(EndClassGetter())
+                case .privateName:
+                    emit(EndClassPrivateGetter())
                 case .expression:
                     emit(EndClassComputedGetter())
                 }
@@ -256,6 +276,9 @@ public class JavaScriptCompiler {
                 switch key {
                 case .name(let name):
                     head = emit(BeginClassSetter(propertyName: name, isStatic: setter.isStatic))
+                case .privateName(let name):
+                    head = emit(
+                        BeginClassPrivateSetter(propertyName: name, isStatic: setter.isStatic))
                 case .index(let index):
                     head = emit(
                         BeginClassSetter(propertyName: String(index), isStatic: setter.isStatic))
@@ -278,6 +301,8 @@ public class JavaScriptCompiler {
                 switch key {
                 case .name, .index:
                     emit(EndClassSetter())
+                case .privateName:
+                    emit(EndClassPrivateSetter())
                 case .expression:
                     emit(EndClassComputedSetter())
                 }
@@ -442,7 +467,7 @@ public class JavaScriptCompiler {
 
         case .functionDeclaration(let functionDeclaration):
             let defaultValues = try compileDefaultValues(for: functionDeclaration.parameters)
-            let parameters = convertParameters(functionDeclaration.parameters)
+            let parameters = try convertParameters(functionDeclaration.parameters)
             let functionBegin: Operation
             let functionEnd: Operation
             switch functionDeclaration.type {
@@ -471,7 +496,7 @@ public class JavaScriptCompiler {
             // here we may overwrite an existing variable mapping.
             mapOrRemap(functionDeclaration.name, to: instr.output)
             try enterNewScope {
-                mapParameters(functionDeclaration.parameters, to: instr.innerOutputs)
+                try mapParameters(functionDeclaration.parameters, to: instr.innerOutputs)
                 for statement in functionDeclaration.body {
                     try compileStatement(statement)
                 }
@@ -949,12 +974,21 @@ public class JavaScriptCompiler {
             case .name(let name):
                 if let op = assignmentOperator {
                     emit(
-                        UpdateProperty(propertyName: name, operator: op),
+                        UpdateProperty(propertyName: name, operator: op), withInputs: [object, rhs])
+                } else {
+                    emit(
+                        SetProperty(propertyName: name, isGuarded: false),
+                        withInputs: [object, rhs])
+                }
+            case .privateName(let name):
+                if let op = assignmentOperator {
+                    emit(
+                        UpdatePrivateProperty(propertyName: name, operator: op),
                         withInputs: [object, rhs])
                 } else {
                     emit(
-                        SetProperty(
-                            propertyName: name, isGuarded: memberExpression.isOptional),
+                        SetPrivateProperty(
+                            propertyName: name, isGuarded: false),
                         withInputs: [object, rhs])
                 }
             case .expression(let expr):
@@ -1227,10 +1261,15 @@ public class JavaScriptCompiler {
                         emit(
                             ObjectLiteralAddComputedProperty(),
                             withInputs: [computedKeys.removeLast()] + inputs)
+                    case .privateName:
+                        throw CompilerError.invalidNodeError(
+                            "Private properties are not valid in object literals")
                     }
                 case .method(let method):
                     let defaultValues = methodDefaultValues.removeLast()
-                    let parameters = convertParameters(method.parameters)
+                    let parameters = try convertParameters(method.parameters)
+                    let isGenerator = method.type == .generator || method.type == .asyncGenerator
+                    let isAsync = method.type == .async || method.type == .asyncGenerator
                     let head: Instruction
 
                     guard let key = method.key.body else {
@@ -1240,23 +1279,30 @@ public class JavaScriptCompiler {
                     switch key {
                     case .name(let name):
                         head = emit(
-                            BeginObjectLiteralMethod(methodName: name, parameters: parameters),
+                            BeginObjectLiteralMethod(
+                                methodName: name, parameters: parameters, isGenerator: isGenerator,
+                                isAsync: isAsync),
                             withInputs: defaultValues)
                     case .index(let index):
                         head = emit(
                             BeginObjectLiteralMethod(
-                                methodName: String(index), parameters: parameters),
+                                methodName: String(index), parameters: parameters,
+                                isGenerator: isGenerator, isAsync: isAsync),
                             withInputs: defaultValues)
                     case .expression:
                         head = emit(
-                            BeginObjectLiteralComputedMethod(parameters: parameters),
+                            BeginObjectLiteralComputedMethod(
+                                parameters: parameters, isGenerator: isGenerator, isAsync: isAsync),
                             withInputs: [computedKeys.removeLast()] + defaultValues)
+                    case .privateName:
+                        throw CompilerError.invalidNodeError(
+                            "Private properties are not valid in object literals")
                     }
 
                     try enterNewScope {
                         var parameters = head.innerOutputs
                         map("this", to: parameters.removeFirst())
-                        mapParameters(method.parameters, to: parameters)
+                        try mapParameters(method.parameters, to: parameters)
                         for statement in method.body {
                             try compileStatement(statement)
                         }
@@ -1267,6 +1313,8 @@ public class JavaScriptCompiler {
                         emit(EndObjectLiteralMethod())
                     case .expression:
                         emit(EndObjectLiteralComputedMethod())
+                    case .privateName:
+                        fatalError("Unreachable")
                     }
                 case .getter(let getter):
                     guard let key = getter.key.body else {
@@ -1283,6 +1331,9 @@ public class JavaScriptCompiler {
                         head = emit(
                             BeginObjectLiteralComputedGetter(),
                             withInputs: [computedKeys.removeLast()])
+                    case .privateName:
+                        throw CompilerError.invalidNodeError(
+                            "Private properties are not valid in object literals")
                     }
                     try enterNewScope {
                         map("this", to: head.innerOutput)
@@ -1295,6 +1346,8 @@ public class JavaScriptCompiler {
                         emit(EndObjectLiteralGetter())
                     case .expression:
                         emit(EndObjectLiteralComputedGetter())
+                    case .privateName:
+                        fatalError("Unreachable")
                     }
                 case .setter(let setter):
                     guard let key = setter.key.body else {
@@ -1311,6 +1364,9 @@ public class JavaScriptCompiler {
                         head = emit(
                             BeginObjectLiteralComputedSetter(),
                             withInputs: [computedKeys.removeLast()])
+                    case .privateName:
+                        throw CompilerError.invalidNodeError(
+                            "Private properties are not valid in object literals")
                     }
                     try enterNewScope {
                         var parameters = head.innerOutputs
@@ -1326,6 +1382,8 @@ public class JavaScriptCompiler {
                         emit(EndObjectLiteralSetter())
                     case .expression:
                         emit(EndObjectLiteralComputedSetter())
+                    case .privateName:
+                        fatalError("Unreachable")
                     }
                 }
             }
@@ -1361,7 +1419,7 @@ public class JavaScriptCompiler {
 
         case .functionExpression(let functionExpression):
             let defaultValues = try compileDefaultValues(for: functionExpression.parameters)
-            let parameters = convertParameters(functionExpression.parameters)
+            let parameters = try convertParameters(functionExpression.parameters)
             let functionBegin: Operation
             let functionEnd: Operation
             let name = functionExpression.name.isEmpty ? nil : functionExpression.name
@@ -1385,7 +1443,7 @@ public class JavaScriptCompiler {
 
             let instr = emit(functionBegin, withInputs: defaultValues)
             try enterNewScope {
-                mapParameters(functionExpression.parameters, to: instr.innerOutputs)
+                try mapParameters(functionExpression.parameters, to: instr.innerOutputs)
                 for statement in functionExpression.body {
                     try compileStatement(statement)
                 }
@@ -1396,7 +1454,7 @@ public class JavaScriptCompiler {
 
         case .arrowFunctionExpression(let arrowFunction):
             let defaultValues = try compileDefaultValues(for: arrowFunction.parameters)
-            let parameters = convertParameters(arrowFunction.parameters)
+            let parameters = try convertParameters(arrowFunction.parameters)
             let functionBegin: Operation
             let functionEnd: Operation
             switch arrowFunction.type {
@@ -1413,7 +1471,7 @@ public class JavaScriptCompiler {
 
             let instr = emit(functionBegin, withInputs: defaultValues)
             try enterNewScope {
-                mapParameters(arrowFunction.parameters, to: instr.innerOutputs)
+                try mapParameters(arrowFunction.parameters, to: instr.innerOutputs)
                 guard let body = arrowFunction.body else {
                     throw CompilerError.invalidNodeError("missing body in arrow function")
                 }
@@ -1443,34 +1501,54 @@ public class JavaScriptCompiler {
                 }
                 switch property {
                 case .name(let name):
+                    let operation: Operation
                     if isSpreading {
-                        return emit(
-                            CallMethodWithSpread(
-                                methodName: name, numArguments: arguments.count, spreads: spreads,
-                                isGuarded: callExpression.isOptional),
-                            withInputs: [object] + arguments
-                        ).output
+                        operation = CallMethodWithSpread(
+                            methodName: name, numArguments: arguments.count,
+                            spreads: spreads, isGuarded: false,
+                            isReceiverOptional: memberExpression.isOptional,
+                            isCallOptional: callExpression.isOptional)
                     } else {
-                        return emit(
-                            CallMethod(
-                                methodName: name, numArguments: arguments.count,
-                                isGuarded: callExpression.isOptional),
-                            withInputs: [object] + arguments
-                        ).output
+                        operation = CallMethod(
+                            methodName: name, numArguments: arguments.count,
+                            isGuarded: false,
+                            isReceiverOptional: memberExpression.isOptional,
+                            isCallOptional: callExpression.isOptional)
                     }
+                    return emit(operation, withInputs: [object] + arguments).output
+                case .privateName(let name):
+                    let operation: Operation
+                    if isSpreading {
+                        operation = CallPrivateMethodWithSpread(
+                            methodName: name, numArguments: arguments.count,
+                            spreads: spreads, isGuarded: false,
+                            isReceiverOptional: memberExpression.isOptional,
+                            isCallOptional: callExpression.isOptional)
+                    } else {
+                        operation = CallPrivateMethod(
+                            methodName: name, numArguments: arguments.count,
+                            isGuarded: false,
+                            isReceiverOptional: memberExpression.isOptional,
+                            isCallOptional: callExpression.isOptional)
+                    }
+                    return emit(operation, withInputs: [object] + arguments).output
                 case .expression(let expr):
                     let method = try compileExpression(expr)
                     if isSpreading {
                         return emit(
                             CallComputedMethodWithSpread(
                                 numArguments: arguments.count, spreads: spreads,
-                                isGuarded: callExpression.isOptional),
+                                isGuarded: false,
+                                isReceiverOptional: memberExpression.isOptional,
+                                isCallOptional: callExpression.isOptional),
                             withInputs: [object, method] + arguments
                         ).output
                     } else {
                         return emit(
                             CallComputedMethod(
-                                numArguments: arguments.count, isGuarded: callExpression.isOptional),
+                                numArguments: arguments.count, isGuarded: false,
+                                isReceiverOptional: memberExpression.isOptional,
+                                isCallOptional: callExpression.isOptional),
                             withInputs: [object, method] + arguments
                         ).output
                     }
@@ -1487,12 +1565,14 @@ public class JavaScriptCompiler {
                     throw CompilerError.invalidNodeError(
                         "Super method calls must use a property name")
                 }
-                guard !callExpression.isOptional else {
+                guard superMemberExpression.isOptional == false else {
                     throw CompilerError.unsupportedFeatureError(
-                        "Optional chaining with super method calls is not supported")
+                        "Optional chaining is not supported in super member expressions")
                 }
                 return emit(
-                    CallSuperMethod(methodName: methodName, numArguments: arguments.count),
+                    CallSuperMethod(
+                        methodName: methodName, numArguments: arguments.count,
+                        isCallOptional: callExpression.isOptional),
                     withInputs: arguments
                 ).output
                 // Now check if it is a V8 intrinsic function
@@ -1512,20 +1592,19 @@ public class JavaScriptCompiler {
                 ).output
                 // Otherwise it's a regular function call
             } else {
-                guard !callExpression.isOptional else {
-                    throw CompilerError.unsupportedFeatureError(
-                        "Not currently supporting optional chaining with function calls")
-                }
                 let callee = try compileExpression(callExpression.callee)
                 if isSpreading {
                     return emit(
                         CallFunctionWithSpread(
-                            numArguments: arguments.count, spreads: spreads, isGuarded: false),
+                            numArguments: arguments.count, spreads: spreads, isGuarded: false,
+                            isCallOptional: callExpression.isOptional),
                         withInputs: [callee] + arguments
                     ).output
                 } else {
                     return emit(
-                        CallFunction(numArguments: arguments.count, isGuarded: false),
+                        CallFunction(
+                            numArguments: arguments.count, isGuarded: false,
+                            isCallOptional: callExpression.isOptional),
                         withInputs: [callee] + arguments
                     ).output
                 }
@@ -1572,7 +1651,16 @@ public class JavaScriptCompiler {
             switch property {
             case .name(let name):
                 return emit(
-                    GetProperty(propertyName: name, isGuarded: memberExpression.isOptional),
+                    GetProperty(
+                        propertyName: name,
+                        isReceiverOptional: memberExpression.isOptional),
+                    withInputs: [object]
+                ).output
+            case .privateName(let name):
+                return emit(
+                    GetPrivateProperty(
+                        propertyName: name, isGuarded: false,
+                        isReceiverOptional: memberExpression.isOptional),
                     withInputs: [object]
                 ).output
             case .expression(let expr):
@@ -1580,13 +1668,14 @@ public class JavaScriptCompiler {
                     let index = Int64(exactly: literal.value)
                 {
                     return emit(
-                        GetElement(index: index, isGuarded: memberExpression.isOptional),
+                        GetElement(
+                            index: index, isReceiverOptional: memberExpression.isOptional),
                         withInputs: [object]
                     ).output
                 } else {
                     let property = try compileExpression(expr)
                     return emit(
-                        GetComputedProperty(isGuarded: memberExpression.isOptional),
+                        GetComputedProperty(isReceiverOptional: memberExpression.isOptional),
                         withInputs: [object, property]
                     ).output
                 }
@@ -1632,16 +1721,21 @@ public class JavaScriptCompiler {
                     throw CompilerError.invalidNodeError(
                         "delete operator must be applied to a member expression")
                 }
+                if case .privateName = memberExpression.property {
+                    throw CompilerError.invalidNodeError(
+                        "Deleting private properties is a syntax error in JavaScript and not supported"
+                    )
+                }
 
                 let obj = try compileExpression(memberExpression.object)
-                // isGuarded is true if the member expression is optional (e.g., obj?.prop)
-                let isGuarded = memberExpression.isOptional
+                let isReceiverOptional = memberExpression.isOptional
 
                 if !memberExpression.name.isEmpty {
                     // Deleting a non-computed property (e.g., delete obj.prop)
                     let propertyName = memberExpression.name
                     let instr = emit(
-                        DeleteProperty(propertyName: propertyName, isGuarded: isGuarded),
+                        DeleteProperty(
+                            propertyName: propertyName, isReceiverOptional: isReceiverOptional),
                         withInputs: [obj]
                     )
                     return instr.output
@@ -1656,14 +1750,14 @@ public class JavaScriptCompiler {
                     {
                         // Delete an element (e.g., delete arr[42])
                         let instr = emit(
-                            DeleteElement(index: index, isGuarded: isGuarded),
+                            DeleteElement(index: index, isReceiverOptional: isReceiverOptional),
                             withInputs: [obj]
                         )
                         return instr.output
                     } else {
                         // Use DeleteComputedProperty for other computed properties (e.g., delete obj["key"])
                         let instr = emit(
-                            DeleteComputedProperty(isGuarded: isGuarded),
+                            DeleteComputedProperty(isReceiverOptional: isReceiverOptional),
                             withInputs: [obj, property]
                         )
                         return instr.output
@@ -1785,10 +1879,66 @@ public class JavaScriptCompiler {
 
     private func mapParameters(
         _ parameters: Compiler_Protobuf_Parameters, to variables: ArraySlice<Variable>
-    ) {
-        assert(parameters.parameters.count == variables.count)
-        for (param, v) in zip(parameters.parameters, variables) {
-            map(param.name, to: v)
+    ) throws {
+        var iter = variables.makeIterator()
+        for param in parameters.parameters {
+            switch param.id {
+            case .objectPattern(let obj):
+                // e.g. function foo({a, b}) {}
+                try mapDestructuringPattern(obj, iterator: &iter)
+            case .arrayPattern(let arr):
+                // e.g. function bar([x, y]) {}
+                try mapDestructuringPattern(arr, iterator: &iter)
+            case .name(let name):
+                map(name, to: iter.next()!)
+            case nil:
+                break
+            }
+        }
+    }
+
+    private func mapDestructuringTarget<Iter: IteratorProtocol>(
+        _ target: Compiler_Protobuf_LValue, iterator: inout Iter
+    ) throws where Iter.Element == Variable {
+        switch target.value {
+        case .destructuringPattern(let dp):
+            switch dp.pattern {
+            case .objectPattern(let obj):
+                try mapDestructuringPattern(obj, iterator: &iterator)
+            case .arrayPattern(let arr):
+                try mapDestructuringPattern(arr, iterator: &iterator)
+            case nil:
+                throw CompilerError.invalidASTError(
+                    "Invalid destructuring assignment target in parameter")
+            }
+        case .identifier(let id):
+            map(id.name, to: iterator.next()!)
+        default:
+            throw CompilerError.invalidASTError(
+                "Invalid destructuring assignment target in parameter")
+        }
+    }
+
+    private func mapDestructuringPattern<Iter: IteratorProtocol>(
+        _ pattern: Compiler_Protobuf_ObjectPattern, iterator: inout Iter
+    ) throws where Iter.Element == Variable {
+        for prop in pattern.properties {
+            try mapDestructuringTarget(prop.target, iterator: &iterator)
+        }
+        if pattern.hasRestTarget {
+            try mapDestructuringTarget(pattern.restTarget, iterator: &iterator)
+        }
+    }
+
+    private func mapDestructuringPattern<Iter: IteratorProtocol>(
+        _ pattern: Compiler_Protobuf_ArrayPattern, iterator: inout Iter
+    ) throws where Iter.Element == Variable {
+        for elem in pattern.elements {
+            guard elem.hasTarget else { continue }
+            try mapDestructuringTarget(elem.target, iterator: &iterator)
+        }
+        if pattern.hasRestTarget {
+            try mapDestructuringTarget(pattern.restTarget, iterator: &iterator)
         }
     }
 
@@ -1804,14 +1954,116 @@ public class JavaScriptCompiler {
         return defaultValues
     }
 
-    private func convertParameters(_ parameters: Compiler_Protobuf_Parameters) -> Parameters {
+    private func convertParameterDestructuringPattern(
+        _ pattern: Compiler_Protobuf_DestructuringPattern
+    ) throws -> DestructuringPattern {
+        switch pattern.pattern {
+        case .objectPattern(let objProto):
+            var properties = [DestructuringPattern.ObjectProperty]()
+            for prop in objProto.properties {
+                let key: DestructuringPattern.ObjectProperty.Key
+                if case .name(let s) = prop.key.body {
+                    key = .string(s)
+                } else if case .index(let i) = prop.key.body {
+                    // e.g. function foo({1: a}) {}
+                    key = .string(String(i))
+                } else {
+                    throw CompilerError.invalidASTError(
+                        "Computed keys not supported in parameter destructuring")
+                }
+
+                let target: DestructuringPattern.Target
+                switch prop.target.value {
+                case .destructuringPattern(let dp):
+                    target = .pattern(try convertParameterDestructuringPattern(dp))
+                case .identifier:
+                    target = .flatBinding
+                default:
+                    throw CompilerError.invalidASTError(
+                        "Invalid destructuring assignment target in parameter")
+                }
+
+                assert(
+                    !prop.hasDefaultValue,
+                    "Default values in parameter destructuring are not yet supported")
+                properties.append(
+                    DestructuringPattern.ObjectProperty(
+                        key: key, target: target, hasDefaultValue: false))
+            }
+            // FuzzIL operations only need to know if a rest target exists, not its string name.
+            // The string name mapping (e.g. "myRestParams" -> v3) is handled separately by `mapDestructuringPattern`.
+            return .object(
+                DestructuringPattern.ObjectPattern(
+                    properties: properties, hasRestElement: objProto.hasRestTarget))
+
+        case .arrayPattern(let arrProto):
+            var elements = [DestructuringPattern.ArrayElement]()
+            for elem in arrProto.elements {
+                guard elem.hasTarget else {
+                    elements.append(
+                        DestructuringPattern.ArrayElement(target: nil, hasDefaultValue: false))
+                    continue
+                }
+                let target: DestructuringPattern.Target
+                switch elem.target.value {
+                case .destructuringPattern(let dp):
+                    target = .pattern(try convertParameterDestructuringPattern(dp))
+                case .identifier:
+                    target = .flatBinding
+                default:
+                    throw CompilerError.invalidASTError(
+                        "Invalid destructuring assignment target in parameter")
+                }
+                assert(
+                    !elem.hasDefaultValue,
+                    "Default values in parameter destructuring are not yet supported")
+                elements.append(
+                    DestructuringPattern.ArrayElement(
+                        target: target, hasDefaultValue: false))
+            }
+            let restTarget: DestructuringPattern.Target?
+            if arrProto.hasRestTarget {
+                switch arrProto.restTarget.value {
+                case .destructuringPattern(let dp):
+                    restTarget = .pattern(try convertParameterDestructuringPattern(dp))
+                default:
+                    restTarget = .flatBinding
+                }
+            } else {
+                restTarget = nil
+            }
+            return .array(
+                DestructuringPattern.ArrayPattern(elements: elements, restTarget: restTarget))
+
+        case nil:
+            throw CompilerError.invalidASTError("Missing pattern")
+        }
+    }
+
+    private func convertParameters(_ parameters: Compiler_Protobuf_Parameters) throws -> Parameters
+    {
         let defaultParameterIndices = parameters.parameters.enumerated()
             .filter { $0.element.hasDefaultValue }
             .map { $0.offset }
 
+        var destructuringParameters = [Int: DestructuringPattern]()
+        for (i, param) in parameters.parameters.enumerated() {
+            switch param.id {
+            case .objectPattern(let obj):
+                let dp = Compiler_Protobuf_DestructuringPattern.with { $0.objectPattern = obj }
+                destructuringParameters[i] = try convertParameterDestructuringPattern(dp)
+            case .arrayPattern(let arr):
+                let dp = Compiler_Protobuf_DestructuringPattern.with { $0.arrayPattern = arr }
+                destructuringParameters[i] = try convertParameterDestructuringPattern(dp)
+            default:
+                break
+            }
+        }
+
         return Parameters(
             count: parameters.parameters.count, hasRestParameter: parameters.hasRestElement_p,
-            defaultParameterIndices: defaultParameterIndices)
+            defaultParameterIndices: defaultParameterIndices,
+            destructuringParameters: destructuringParameters)
     }
 
     /// Convenience accessor for the currently active scope.
@@ -1865,7 +2117,10 @@ public class JavaScriptCompiler {
         }
         inputs.append(try compileExpression(memExpr.object))
         switch memExpr.property {
-        case .name(let s): return .property(s)
+        case .name(let s):
+            return .property(s)
+        case .privateName(let s):
+            return .privateProperty(s)
         case .expression(let expr):
             if case .numberLiteral(let literal) = expr.expression,
                 let index = Int64(exactly: literal.value)
@@ -1978,6 +2233,9 @@ public class JavaScriptCompiler {
 
             var hasDefaultValue = false
             if propProto.hasDefaultValue {
+                // TODO(rherouart): we should not emit FuzzIL Code unless default is called, otherwise
+                // `let {a = default_with_side_effect()} = foo;`
+                // may behave differently in original and re-lifted code otherwise.
                 let defaultVar = try compileExpression(propProto.defaultValue)
                 hasDefaultValue = true
                 inputs.append(defaultVar)

@@ -195,6 +195,7 @@ public let codeGeneratorWeights = [
     "ForOfWithObjectDestructLoopGenerator":      3,
     "ForAwaitOfWithObjectDestructLoopGenerator": 3,
     "RepeatLoopGenerator":                      10,
+    "ChainedReassignments":                     5,
     "SwitchCaseBreakGenerator":                 5,
     "LoopBreakGenerator":                       5,
     "ContinueGenerator":                        5,
@@ -287,6 +288,7 @@ public let codeGeneratorWeights = [
     "WasmMemoryFillGenerator":                  5,
     "WasmMemoryInitGenerator":                  5,
     "WasmDefineGlobalGenerator":                2,
+    "WasmDefineIndexTypedGlobalGenerator":      2,
     "WasmDefineTableGenerator":                 2,
     // TODO(427115604): update onece both init and copy instructions are implemented.
     "WasmDefineElementSegmentGenerator":        1,
@@ -406,6 +408,8 @@ public let codeGeneratorWeights = [
     "WasmArrayTypeGenerator":                   5,
     "WasmStructTypeGenerator":                  5,
     "WasmSignatureTypeGenerator":               5,
+
+    "WasmCustomDescriptorsStructTypesGenerator":5,
     "WasmSelfReferenceGenerator":               5,
     "WasmForwardReferenceGenerator":            5,
 
@@ -433,4 +437,11 @@ public let codeGeneratorWeights = [
     "WasmRefCastAbstractGenerator":             5,
     "WasmBranchOnCastGenerator":                5,
     "WasmBranchOnCastFailGenerator":            5,
+
+    // Wasm JS String Generators
+    "WasmPackedI16ArrayTypeDefGenerator":       5,
+    "WasmJSStringConstantGenerator":            5,
+    "WasmJSStringBuiltinGenerator":             5,
+    "WasmJSStringFromCharCodeArrayGenerator":   5,
+    "WasmJSStringIntoCharCodeArrayGenerator":   5,
 ]

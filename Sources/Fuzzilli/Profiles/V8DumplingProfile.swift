@@ -129,6 +129,7 @@ let v8DumplingProfile = Profile(
         (TurbofanVerifyTypeGenerator, 10),
 
         (V8GcGenerator, 10),
+        (V8SimulateNewspaceFullGenerator, 5),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
@@ -136,7 +137,8 @@ let v8DumplingProfile = Profile(
         (ValueSerializerFuzzer, 1),
         (V8RegExpFuzzer, 1),
         (FastApiCallFuzzer, 1),
-        (LazyDeoptFuzzer, 1),
+        (RecursiveLazyDeoptFuzzer, 1),
+        (IndirectLazyDeoptFuzzer, 1),
     ]),
 
     disabledCodeGenerators: [],
@@ -144,7 +146,7 @@ let v8DumplingProfile = Profile(
     disabledMutators: [],
 
     additionalBuiltins: [
-        "gc": .function([.opt(gcOptions.instanceType)] => (.undefined | .jsPromise)),
+        "gc": .function([.opt(gcOptions.instanceType)] => (.undefined | .jsPromise())),
         "d8": .jsD8,
         "Worker": .constructor(
             [.jsAnything, .object()] => .object(withMethods: ["postMessage", "getMessage"])),

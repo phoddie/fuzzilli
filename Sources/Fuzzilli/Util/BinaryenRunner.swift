@@ -19,7 +19,6 @@ public struct BinaryenRunner {
     public static let featureArguments = [
         "--enable-gc",
         "--enable-reference-types",
-        "--enable-typed-function-references",
         "--enable-sign-ext",
         "--enable-threads",
         "--enable-mutable-globals",
@@ -36,7 +35,7 @@ public struct BinaryenRunner {
         "--enable-multimemory",
         "--enable-custom-descriptors",
         "--enable-multibyte",
-        "--enable-relaxed-atomics",
+        "--enable-acquire-release-atomics",
     ]
 
     struct BinaryenError: Error, CustomStringConvertible {

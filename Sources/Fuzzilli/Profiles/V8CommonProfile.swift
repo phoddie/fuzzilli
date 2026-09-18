@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import OrderedCollections
+
 extension ILType {
     public static let jsD8 = ILType.object(ofGroup: "D8", withProperties: ["test"], withMethods: [])
 
@@ -105,6 +107,12 @@ public let V8MajorGcGenerator = CodeGenerator("MajorGcGenerator") { b in
     // Differently to `gc()`, this intrinsic is registered with less effects, preventing fewer
     // optimizations in V8's optimizing compilers.
     b.eval("%MajorGCForCompilerTesting()")
+}
+
+// Simulates young generation (New Space) exhaustion, forcing subsequent allocations onto
+// the runtime allocation slow path and triggering a scavenge (minor GC).
+public let V8SimulateNewspaceFullGenerator = CodeGenerator("SimulateNewspaceFullGenerator") { b in
+    b.eval("%SimulateNewspaceFull()")
 }
 
 public let ForceJITCompilationThroughLoopGenerator = CodeGenerator(
@@ -362,13 +370,15 @@ public let MapTransitionFuzzer = ProgramTemplate("MapTransitionFuzzer") { b in
         "CreateObject", produces: [.object()], useInPrefix: true
     ) { b in
         let (properties, values) = randomProperties(in: b)
-        let obj = b.createObject(with: Dictionary(uniqueKeysWithValues: zip(properties, values)))
+        let obj = b.createObject(
+            with: OrderedDictionary(uniqueKeysWithValues: zip(properties, values)))
         assert(b.type(of: obj).Is(objType))
     }
     let objectMakerGenerator = CodeGenerator("ObjectMaker") { b in
         let f = b.buildPlainFunction(with: b.randomParameters()) { args in
             let (properties, values) = randomProperties(in: b)
-            let o = b.createObject(with: Dictionary(uniqueKeysWithValues: zip(properties, values)))
+            let o = b.createObject(
+                with: OrderedDictionary(uniqueKeysWithValues: zip(properties, values)))
             b.doReturn(o)
         }
         for _ in 0..<3 {
@@ -706,8 +716,41 @@ public let HomomorphicFeedbackFuzzer = ProgramTemplate("HomomorphicFeedbackFuzze
     }
 }
 
+// Creates a trigger function for lazy-deopting an optimized function,
+// hoping that the trigger function will be used inside the optimized function
+// in an interersting way (e.g., passing it as a callback).
+public let IndirectLazyDeoptFuzzer = ProgramTemplate("IndirectLazyDeoptFuzzer") { b in
+    b.buildPrefix()
+    b.build(n: 30)
+
+    let mainFunctionParams = b.randomParameters()
+    let dummyFct = b.buildPlainFunction(with: mainFunctionParams) { args in
+        b.loadString("Dummy function to be reassigned later")
+    }
+
+    let triggerFunctionParams = b.randomParameters()
+    let triggerLazyDeopt = b.buildPlainFunction(with: triggerFunctionParams) { args in
+        b.build(n: 10)
+        b.eval("%DeoptimizeFunction(%@)", with: [dummyFct])
+    }
+    let realFct = b.buildPlainFunction(with: mainFunctionParams) { args in
+        // Hopefully this code will use `triggerLazyDeopt` somehow:
+        b.build(n: 30)
+        b.doReturn(b.randomJsVariable())
+    }
+
+    // Reassign so that `triggerLazyDeopt` will lazy deopt `realFct`
+    b.reassign(variable: dummyFct, value: realFct)
+    let args = b.randomArguments(forCalling: realFct)
+    let guardCalls = probability(0.5)
+    b.eval("%PrepareFunctionForOptimization(%@)", with: [realFct])
+    b.callFunction(realFct, withArgs: args, guard: guardCalls)
+    b.eval("%OptimizeFunctionOnNextCall(%@)", with: [realFct])
+    b.callFunction(realFct, withArgs: args, guard: guardCalls)
+}
+
 // Emits calls with recursive calls of limited depth.
-public let LazyDeoptFuzzer = ProgramTemplate("LazyDeoptFuzzer") { b in
+public let RecursiveLazyDeoptFuzzer = ProgramTemplate("RecursiveLazyDeoptFuzzer") { b in
     b.buildPrefix()
     b.build(n: 30)
 
@@ -761,7 +804,7 @@ public let WasmDeoptFuzzer = WasmProgramTemplate("WasmDeoptFuzzer") { b in
         b.build(n: 10)
     }
 
-    let wasmModule = b.buildWasmModule { wasmModule in
+    let wasmModule = b.buildWasmModule(possiblyWithStartFunction: true) { wasmModule in
         b.build(n: 10)
         // Emit the callees for the call_indirect
         let callees = (0..<numCallees).map { _ in
@@ -818,7 +861,7 @@ public let WasmInJsInliningFuzzer = WasmProgramTemplate("WasmInJsInliningFuzzer"
     }
 
     // Create a Wasm function that we can call from JS.
-    let wasmModule = b.buildWasmModule { wasmModule in
+    let wasmModule = b.buildWasmModule(possiblyWithStartFunction: true) { wasmModule in
         // Build some other functions, tags, globals, tables etc.
         b.build(n: 5)
         // Create the function we want to call from JS.
@@ -915,7 +958,7 @@ public let WasmTurbofanFuzzer = WasmProgramTemplate("WasmTurbofanFuzzer") { b in
         b.build(n: 10)
     }
 
-    let wasmModule = b.buildWasmModule { wasmModule in
+    let wasmModule = b.buildWasmModule(possiblyWithStartFunction: true) { wasmModule in
         // Have some budget for tables, globals, memories, other functions that can be called, ...
         b.build(n: 30)
 
@@ -963,7 +1006,7 @@ public let WasmFastCallFuzzer = WasmProgramTemplate("WasmFastCallFuzzer") { b in
     let functionSig = chooseUniform(from: b.methodSignatures(of: target.method, on: target.group))
     let wrappedSig = [.plain(b.type(of: apiObj))] + functionSig.parameters => functionSig.outputType
 
-    let m = b.buildWasmModule { m in
+    let m = b.buildWasmModule(possiblyWithStartFunction: true) { m in
         let allWasmTypes: WeightedList<ILType> = WeightedList([
             (.wasmi32, 1), (.wasmi64, 1), (.wasmf32, 1), (.wasmf64, 1), (.wasmExternRef(), 1),
             (.wasmFuncRef(), 1),
@@ -1119,12 +1162,10 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         "--omit-quit",
         "--allow-natives-syntax",
         "--fuzzing",
-        "--future",
         "--harmony",
         "--experimental-fuzzing",
         "--js-staging",
         "--wasm-staging",
-        "--experimental-wasm-acquire-release",
         "--wasm-fast-api",
         "--expose-fast-api",
         "--wasm-test-streaming",  // WebAssembly.compileStreaming & WebAssembly.instantiateStreaming()
@@ -1136,6 +1177,12 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
     }
 
     guard randomize else { return args }
+
+    // Prioritize fuzzing "future" logic as it is more likely to have bugs but keep some basic
+    // coverage for the shipping non-future logic.
+    if probability(0.8) {
+        args.append("--future")
+    }
 
     //
     // Existing features that should sometimes be disabled.
@@ -1209,6 +1256,14 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         args.append("--wasm-random-rescheduling")
     }
 
+    if probability(0.4) {
+        // This flag tells the engine it should assume that partial OOB writes do not write
+        // anything on this architecture and trap immediately, which allows using implicit bounds
+        // checks for multi-byte Wasm linear memory stores on arm64 (and for arm64, this is
+        // otherwise only enabled on MacOS hardware by default).
+        args.append("--wasm-partial-oob-writes-are-noops")
+    }
+
     // Disabling batching allows the fuzzer to reach higher JIT tiers faster; sometimes test the
     // production configuration too.
     if probability(0.8) {
@@ -1267,6 +1322,9 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
                 args.append("--max-inlined-bytecode-size-small=0")
             }
         }
+        if probability(0.1) {
+            args.append("--maglev-disable-builtin-reducers")
+        }
     }
 
     if probability(0.1) {
@@ -1296,6 +1354,10 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
     }
 
     if probability(0.1) {
+        args.append("--stress-descriptor-array-trimming")
+    }
+
+    if probability(0.1) {
         let stackSize = Int.random(in: 54...863)
         args.append("--stack-size=\(stackSize)")
     }
@@ -1308,7 +1370,7 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         args.append("--wasm-stack-switching-stack-size=\(stackSwitchingSize)")
     }
     if probability(0.5) {
-        args.append("--experimental-wasm-growable-stacks")
+        args.append("--wasm-growable-stacks")
     }
     if probability(0.5) {
         args.append("--stress-wasm-stack-switching")
@@ -1328,6 +1390,10 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
     // Choose the bytecode verification level: default (currently none), light or full.
     if probability(0.67) {
         args.append(probability(0.5) ? "--verify-bytecode-light" : "--verify-bytecode-full")
+    }
+
+    if probability(0.1) {
+        args.append("--disable-loop-stack-checks")
     }
 
     //
@@ -1498,8 +1564,6 @@ public func v8ProcessArgs(randomize: Bool, forSandbox: Bool) -> [String] {
         chooseBooleanFlag("wasm-math-intrinsics")
         chooseBooleanFlag("wasm-bulkmem-inlining")
         chooseBooleanFlag("wasm-lazy-compilation")
-        chooseBooleanFlag("asm-wasm-lazy-compilation")
-        chooseBooleanFlag("validate-asm")
     }
 
     return args

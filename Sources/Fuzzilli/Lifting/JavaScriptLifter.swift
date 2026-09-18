@@ -272,10 +272,9 @@ public class JavaScriptLifter: Lifter {
                 continue
             }
 
-            // Handling of guarded operations, part 1: unless we have special handling (e.g. for guarded property loads we use `o?.foo`),
-            // we emit a try-catch around guarded operations so prepare for that.
+            // Handling of guarded operations, part 1: we emit a try-catch around guarded operations so prepare for that.
             var guarding = false
-            if instr.isGuarded && !haveSpecialHandlingForGuardedOp(instr.op) {
+            if instr.isGuarded {
                 assert(!instr.isBlock, "Cannot wrap block headers/footers in try-catch")
                 guarding = true
 
@@ -305,7 +304,9 @@ public class JavaScriptLifter: Lifter {
             // for more details.
             // We also have some lightweight checking logic to ensure that the input expressions are retrieved in the correct order.
             // This does not guarantee that they will also _evaluate_ in that order at runtime, but it's probably a decent approximation.
-            guard let inputs = w.retrieve(expressionsFor: instr.inputs) else {
+            let inputsToRetrieve: ArraySlice<Variable> =
+                instr.op is EndWasmModule ? [] : instr.inputs
+            guard let inputs = w.retrieve(expressionsFor: inputsToRetrieve) else {
                 fatalError(
                     "Missing one or more expressions for inputs \(instr.inputs) of \(instr).\n"
                         + "Program is \(FuzzILLifter().lift(program, withOptions: .includeComments))\n"
@@ -470,7 +471,10 @@ public class JavaScriptLifter: Lifter {
                 }
                 let PARAMS = liftParameters(op.parameters, as: vars, defaultValues: defaultValues)
                 let METHOD = quoteIdentifierIfNeeded(op.methodName)
-                currentObjectLiteral.beginMethod("\(METHOD)(\(PARAMS)) {", &w)
+                let generator = op.isGenerator ? "*" : ""
+                let asyncStr = op.isAsync ? "async " : ""
+                currentObjectLiteral.beginMethod(
+                    "\(asyncStr)\(generator)\(METHOD)(\(PARAMS)) {", &w)
                 bindVariableToThis(instr.innerOutput(0))
 
             case .endObjectLiteralMethod:
@@ -484,7 +488,10 @@ public class JavaScriptLifter: Lifter {
                 }
                 let PARAMS = liftParameters(op.parameters, as: vars, defaultValues: defaultValues)
                 let METHOD = input(0)
-                currentObjectLiteral.beginMethod("[\(METHOD)](\(PARAMS)) {", &w)
+                let generator = op.isGenerator ? "*" : ""
+                let asyncStr = op.isAsync ? "async " : ""
+                currentObjectLiteral.beginMethod(
+                    "\(asyncStr)\(generator)[\(METHOD)](\(PARAMS)) {", &w)
                 bindVariableToThis(instr.innerOutput(0))
 
             case .endObjectLiteralComputedMethod:
@@ -628,7 +635,9 @@ public class JavaScriptLifter: Lifter {
                 let PARAMS = liftParameters(op.parameters, as: vars, defaultValues: defaultValues)
                 let METHOD = quoteIdentifierIfNeeded(op.methodName)
                 let staticStr = op.isStatic ? "static " : ""
-                w.emit("\(staticStr)\(METHOD)(\(PARAMS)) {")
+                let generator = op.isGenerator ? "*" : ""
+                let asyncStr = op.isAsync ? "async " : ""
+                w.emit("\(staticStr)\(asyncStr)\(generator)\(METHOD)(\(PARAMS)) {")
                 w.enterNewBlock()
                 bindVariableToThis(instr.innerOutput(0))
 
@@ -641,7 +650,9 @@ public class JavaScriptLifter: Lifter {
                 let PARAMS = liftParameters(op.parameters, as: vars, defaultValues: defaultValues)
                 let METHOD = input(0)
                 let staticStr = op.isStatic ? "static " : ""
-                w.emit("\(staticStr)[\(METHOD)](\(PARAMS)) {")
+                let generator = op.isGenerator ? "*" : ""
+                let asyncStr = op.isAsync ? "async " : ""
+                w.emit("\(staticStr)\(asyncStr)\(generator)[\(METHOD)](\(PARAMS)) {")
                 w.enterNewBlock()
                 bindVariableToThis(instr.innerOutput(0))
 
@@ -706,11 +717,38 @@ public class JavaScriptLifter: Lifter {
                 let PARAMS = liftParameters(op.parameters, as: vars, defaultValues: defaultValues)
                 let METHOD = op.methodName
                 let staticStr = op.isStatic ? "static " : ""
-                w.emit("\(staticStr)#\(METHOD)(\(PARAMS)) {")
+                let generator = op.isGenerator ? "*" : ""
+                let asyncStr = op.isAsync ? "async " : ""
+                w.emit("\(staticStr)\(asyncStr)\(generator)#\(METHOD)(\(PARAMS)) {")
                 w.enterNewBlock()
                 bindVariableToThis(instr.innerOutput(0))
 
             case .endClassPrivateMethod:
+                w.leaveCurrentBlock()
+                w.emit("}")
+
+            case .beginClassPrivateGetter(let op):
+                let PROPERTY = op.propertyName
+                let staticStr = op.isStatic ? "static " : ""
+                w.emit("\(staticStr)get #\(PROPERTY)() {")
+                w.enterNewBlock()
+                bindVariableToThis(instr.innerOutput(0))
+
+            case .endClassPrivateGetter:
+                w.leaveCurrentBlock()
+                w.emit("}")
+
+            case .beginClassPrivateSetter(let op):
+                assert(instr.numInnerOutputs == 2)
+                let vars = w.declareAll(instr.innerOutputs.dropFirst(), usePrefix: "a")
+                let PARAMS = liftParameters(op.parameters, as: vars)
+                let PROPERTY = op.propertyName
+                let staticStr = op.isStatic ? "static " : ""
+                w.emit("\(staticStr)set #\(PROPERTY)(\(PARAMS)) {")
+                w.enterNewBlock()
+                bindVariableToThis(instr.innerOutput(0))
+
+            case .endClassPrivateSetter:
                 w.leaveCurrentBlock()
                 w.emit("}")
 
@@ -773,7 +811,7 @@ public class JavaScriptLifter: Lifter {
                 let obj = input(0)
                 let expr =
                     MemberExpression.new() + obj
-                    + (liftMemberAccess(op.propertyName, isGuarded: op.isGuarded))
+                    + (liftMemberAccess(op.propertyName, isOptional: op.isReceiverOptional))
                 w.assign(expr, to: instr.output)
 
             case .setProperty(let op):
@@ -795,7 +833,7 @@ public class JavaScriptLifter: Lifter {
                 let obj = inputAsIdentifier(0)
                 let target =
                     MemberExpression.new() + obj
-                    + (liftMemberAccess(op.propertyName, isGuarded: op.isGuarded))
+                    + (liftMemberAccess(op.propertyName, isOptional: op.isReceiverOptional))
                 let expr = UnaryExpression.new() + "delete " + target
                 w.assign(expr, to: instr.output)
 
@@ -808,7 +846,7 @@ public class JavaScriptLifter: Lifter {
 
             case .getElement(let op):
                 let obj = input(0)
-                let accessOperator = op.isGuarded ? "?.[" : "["
+                let accessOperator = op.isReceiverOptional ? "?.[" : "["
                 let expr = MemberExpression.new() + obj + accessOperator + op.index + "]"
                 w.assign(expr, to: instr.output)
 
@@ -829,7 +867,7 @@ public class JavaScriptLifter: Lifter {
             case .deleteElement(let op):
                 // For aesthetic reasons, we don't want to inline the lhs of an element deletion, so force it to be stored in a variable.
                 let obj = inputAsIdentifier(0)
-                let accessOperator = op.isGuarded ? "?.[" : "["
+                let accessOperator = op.isReceiverOptional ? "?.[" : "["
                 let target = MemberExpression.new() + obj + accessOperator + op.index + "]"
                 let expr = UnaryExpression.new() + "delete " + target
                 w.assign(expr, to: instr.output)
@@ -843,7 +881,7 @@ public class JavaScriptLifter: Lifter {
 
             case .getComputedProperty(let op):
                 let obj = input(0)
-                let accessOperator = op.isGuarded ? "?.[" : "["
+                let accessOperator = op.isReceiverOptional ? "?.[" : "["
                 let expr = MemberExpression.new() + obj + accessOperator + input(1).text + "]"
                 w.assign(expr, to: instr.output)
 
@@ -864,7 +902,7 @@ public class JavaScriptLifter: Lifter {
             case .deleteComputedProperty(let op):
                 // For aesthetic reasons, we don't want to inline the lhs of a property deletion, so force it to be stored in a variable.
                 let obj = inputAsIdentifier(0)
-                let accessOperator = op.isGuarded ? "?.[" : "["
+                let accessOperator = op.isReceiverOptional ? "?.[" : "["
                 let target = MemberExpression.new() + obj + accessOperator + input(1).text + "]"
                 let expr = UnaryExpression.new() + "delete " + target
                 w.assign(expr, to: instr.output)
@@ -1020,19 +1058,22 @@ public class JavaScriptLifter: Lifter {
                 let expr = UnaryExpression.new() + "await " + input(0)
                 w.assign(expr, to: instr.output)
 
-            case .callFunction:
+            case .callFunction(let op):
                 // Avoid inlining of the function expression. This is mostly for aesthetic reasons, but is also required if the expression for
                 // the function is a MemberExpression since it would otherwise be interpreted as a method call, not a function call.
                 let f = inputAsIdentifier(0)
                 let args = inputs.dropFirst()
-                let expr = CallExpression.new() + f + "(" + liftCallArguments(args) + ")"
+                let expr =
+                    CallExpression.new() + f + (op.isCallOptional ? "?.(" : "(")
+                    + liftCallArguments(args) + ")"
                 w.assign(expr, to: instr.output)
 
             case .callFunctionWithSpread(let op):
                 let f = inputAsIdentifier(0)
                 let args = inputs.dropFirst()
                 let expr =
-                    CallExpression.new() + f + "(" + liftCallArguments(args, spreading: op.spreads)
+                    CallExpression.new() + f + (op.isCallOptional ? "?.(" : "(")
+                    + liftCallArguments(args, spreading: op.spreads)
                     + ")"
                 w.assign(expr, to: instr.output)
 
@@ -1054,33 +1095,43 @@ public class JavaScriptLifter: Lifter {
 
             case .callMethod(let op):
                 let obj = input(0)
-                let method = MemberExpression.new() + obj + (liftMemberAccess(op.methodName))
+                let method =
+                    MemberExpression.new() + obj
+                    + (liftMemberAccess(op.methodName, isOptional: op.isReceiverOptional))
                 let args = inputs.dropFirst()
-                let expr = CallExpression.new() + method + "(" + liftCallArguments(args) + ")"
+                let expr =
+                    CallExpression.new() + method + (op.isCallOptional ? "?.(" : "(")
+                    + liftCallArguments(args) + ")"
                 w.assign(expr, to: instr.output)
 
             case .callMethodWithSpread(let op):
                 let obj = input(0)
-                let method = MemberExpression.new() + obj + (liftMemberAccess(op.methodName))
+                let method =
+                    MemberExpression.new() + obj
+                    + (liftMemberAccess(op.methodName, isOptional: op.isReceiverOptional))
                 let args = inputs.dropFirst()
                 let expr =
-                    CallExpression.new() + method + "("
+                    CallExpression.new() + method + (op.isCallOptional ? "?.(" : "(")
                     + liftCallArguments(args, spreading: op.spreads) + ")"
                 w.assign(expr, to: instr.output)
 
-            case .callComputedMethod:
+            case .callComputedMethod(let op):
                 let obj = input(0)
-                let method = MemberExpression.new() + obj + "[" + input(1).text + "]"
+                let accessOperator = op.isReceiverOptional ? "?.[" : "["
+                let method = MemberExpression.new() + obj + accessOperator + input(1).text + "]"
                 let args = inputs.dropFirst(2)
-                let expr = CallExpression.new() + method + "(" + liftCallArguments(args) + ")"
+                let expr =
+                    CallExpression.new() + method + (op.isCallOptional ? "?.(" : "(")
+                    + liftCallArguments(args) + ")"
                 w.assign(expr, to: instr.output)
 
             case .callComputedMethodWithSpread(let op):
                 let obj = input(0)
-                let method = MemberExpression.new() + obj + "[" + input(1).text + "]"
+                let accessOperator = op.isReceiverOptional ? "?.[" : "["
+                let method = MemberExpression.new() + obj + accessOperator + input(1).text + "]"
                 let args = inputs.dropFirst(2)
                 let expr =
-                    CallExpression.new() + method + "("
+                    CallExpression.new() + method + (op.isCallOptional ? "?.(" : "(")
                     + liftCallArguments(args, spreading: op.spreads) + ")"
                 w.assign(expr, to: instr.output)
 
@@ -1139,23 +1190,24 @@ public class JavaScriptLifter: Lifter {
             case .destruct(let op):
                 let outputs = w.declareAll(instr.outputs)
                 let OBJ = input(0)
-                var inputIdx = 1
-                var outputIdx = 0
+                let inputIter = Ref(
+                    zip(instr.inputs.dropFirst(), inputs.dropFirst()).makeIterator())
+                let outputIter = Ref(outputs.makeIterator())
                 let PATTERN = liftDestructuringPattern(
-                    op.pattern, isReassign: false, inputIdx: &inputIdx, outputIdx: &outputIdx,
-                    inputs: inputs.map { $0.text }, outputs: outputs)
+                    op.pattern, isReassign: false,
+                    inputIterator: inputIter, outputIterator: outputIter)
                 let LET = w.varKeyword
                 w.emit("\(LET) \(PATTERN) = \(OBJ);")
 
             case .destructAndReassign(let op):
                 let OBJ = input(0)
-                var inputIdx = 1
-                var outputIdx = 0
+                let inputIter = Ref(
+                    zip(instr.inputs.dropFirst(), inputs.dropFirst()).makeIterator())
+                let outputIter = Ref([String]().makeIterator())
                 let PATTERN = liftDestructuringPattern(
-                    op.pattern, isReassign: true, inputIdx: &inputIdx, outputIdx: &outputIdx,
-                    inputs: inputs.map { $0.text }, outputs: [],
-                    resolveTarget: { i in w.ensureIsIdentifier(inputs[i], for: instr.input(i)).text
-                    })
+                    op.pattern, isReassign: true,
+                    inputIterator: inputIter, outputIterator: outputIter,
+                    resolveTarget: { v, expr in w.ensureIsIdentifier(expr, for: v).text })
                 if case .object = op.pattern {
                     w.emit("(\(PATTERN) = \(OBJ));")
                 } else {
@@ -1230,12 +1282,14 @@ public class JavaScriptLifter: Lifter {
 
             case .callSuperMethod(let op):
                 let method = MemberExpression.new() + "super" + liftMemberAccess(op.methodName)
-                let expr = CallExpression.new() + method + "(" + liftCallArguments(inputs) + ")"
+                let callOp = op.isCallOptional ? "?.(" : "("
+                let expr = CallExpression.new() + method + callOp + liftCallArguments(inputs) + ")"
                 w.assign(expr, to: instr.output)
 
             case .getPrivateProperty(let op):
                 let obj = input(0)
-                let expr = MemberExpression.new() + obj + ".#" + op.propertyName
+                let opToken = op.isReceiverOptional ? "?.#" : ".#"
+                let expr = MemberExpression.new() + obj + opToken + op.propertyName
                 w.assign(expr, to: instr.output)
 
             case .setPrivateProperty(let op):
@@ -1254,9 +1308,22 @@ public class JavaScriptLifter: Lifter {
 
             case .callPrivateMethod(let op):
                 let obj = input(0)
-                let method = MemberExpression.new() + obj + ".#" + op.methodName
+                let opToken = op.isReceiverOptional ? "?.#" : ".#"
+                let method = MemberExpression.new() + obj + opToken + op.methodName
                 let args = inputs.dropFirst()
-                let expr = CallExpression.new() + method + "(" + liftCallArguments(args) + ")"
+                let expr =
+                    CallExpression.new() + method + (op.isCallOptional ? "?.(" : "(")
+                    + liftCallArguments(args) + ")"
+                w.assign(expr, to: instr.output)
+
+            case .callPrivateMethodWithSpread(let op):
+                let obj = input(0)
+                let opToken = op.isReceiverOptional ? "?.#" : ".#"
+                let method = MemberExpression.new() + obj + opToken + op.methodName
+                let args = inputs.dropFirst()
+                let expr =
+                    CallExpression.new() + method + (op.isCallOptional ? "?.(" : "(")
+                    + liftCallArguments(args, spreading: op.spreads) + ")"
                 w.assign(expr, to: instr.output)
 
             case .getSuperProperty(let op):
@@ -1496,12 +1563,12 @@ public class JavaScriptLifter: Lifter {
                         let LET = w.varKeyword
                         let outputs = w.declareAll(instr.innerOutputs.dropLast())
                         // Note: ForLoop patterns don't have inputs for computed keys or defaults right now.
-                        var nextInputIndex = 1
-                        var nextOutputIndex = 0
+                        let inputIter = Ref(
+                            zip(instr.inputs.dropFirst(), inputs.dropFirst()).makeIterator())
+                        let outputIter = Ref(outputs.makeIterator())
                         let PATTERN = liftDestructuringPattern(
                             pattern, isReassign: false,
-                            inputIdx: &nextInputIndex, outputIdx: &nextOutputIndex,
-                            inputs: inputs.map { $0.text }, outputs: outputs)
+                            inputIterator: inputIter, outputIterator: outputIter)
                         w.emit("\(prefix)\(loopKeyword) (\(LET) \(PATTERN) of \(OBJ)) {")
                     }
                 }
@@ -1735,7 +1802,8 @@ public class JavaScriptLifter: Lifter {
                 wasmCodeStarts = instr.index
                 assert(wasmInstructions.isEmpty)
 
-            case .endWasmModule:
+            case .endWasmModule(let op):
+                let startFunction = op.hasStartFunction ? instr.input(0) : nil
                 // Lift the FuzzILCode of this Block first.
                 w.emitComment("WasmModule Code:")
                 let code = Code(program.code[wasmCodeStarts!...instr.index], isBundle: false)
@@ -1746,9 +1814,11 @@ public class JavaScriptLifter: Lifter {
                 let V = w.declare(instr.output, as: "v\(instr.output.number)")
                 // TODO: support a better diagnostics mode which stores the .wasm binary file alongside the samples.
                 do {
-                    let (bytecode, importRefs) = try WasmLifter(
-                        withTyper: typer!, withWasmCode: wasmInstructions
-                    ).lift()
+                    let (bytecode, importRefs, didUseJSStringBuiltins, didImportStringConstants) =
+                        try WasmLifter(
+                            withTyper: typer!, withWasmCode: wasmInstructions,
+                            startFunction: startFunction
+                        ).lift()
                     // Get and check that we have the imports here as expressions and fail otherwise.
                     let imports: [(Variable, Expression)] = try importRefs.map { ref in
                         if let expr = w.retrieve(expressionsFor: [ref]) {
@@ -1763,10 +1833,20 @@ public class JavaScriptLifter: Lifter {
                     w.enterNewBlock()
                     liftByteArray([UInt8](bytecode), to: &w)
                     w.leaveCurrentBlock()
+
+                    var options: [String] = []
+                    if didUseJSStringBuiltins {
+                        options.append("builtins: ['js-string']")
+                    }
+                    if didImportStringConstants {
+                        options.append("importedStringConstants: '\"'")
+                    }
+                    let moduleOptions =
+                        options.isEmpty ? "" : ", { \(options.joined(separator: ", ")) }"
                     if importRefs.isEmpty {
-                        w.emit("])));")
+                        w.emit("])\(moduleOptions)));")
                     } else {
-                        w.emit("])),")
+                        w.emit("])\(moduleOptions)),")
                         w.emit("{ imports: {")
                         w.enterNewBlock()
                         for (idx, (importRef, expr)) in imports.enumerated() {
@@ -1813,14 +1893,18 @@ public class JavaScriptLifter: Lifter {
                 w.enterNewBlock()
                 liftByteArray(op.bytes, to: &w)
                 w.leaveCurrentBlock()
-                w.emit("])), fuzzing_imports);")
+                // TODO(rezvan, mliedtke): Support string constants in the binaryen integration.
+                // We always include 'js-string' here because we don't know if the builtins are used.
+                w.emit(
+                    "]), { builtins: ['js-string'] }), fuzzing_imports);"
+                )
 
             case .createWasmTable(let op):
                 let V = w.declare(instr.output)
                 let LET = w.varKeyword
                 let type: String
                 switch op.tableType.elementType {
-                case .wasmExternRef():
+                case .wasmExternRef(), .wasmJSStringRef():
                     type = "externref"
                 case .wasmFuncRef():
                     type = "anyfunc"
@@ -1871,7 +1955,7 @@ public class JavaScriptLifter: Lifter {
                         return "\"i64\""
                     case .wasmSimd128:
                         return "\"v128\""
-                    case ILType.wasmExternRef():
+                    case ILType.wasmExternRef(), ILType.wasmJSStringRef():
                         return "\"externref\""
                     case ILType.wasmFuncRef():
                         return "\"anyfunc\""
@@ -1917,6 +2001,20 @@ public class JavaScriptLifter: Lifter {
                 .wasmi32EqualZero(_),
                 .wasmi64EqualZero(_),
                 .wasmWrapi64Toi32(_),
+                .wasmJSStringLength(_),
+                .wasmJSStringFromCharCodeArray(_),
+                .wasmJSStringFromCharCode(_),
+                .wasmJSStringFromCodePoint(_),
+                .wasmJSStringCharCodeAt(_),
+                .wasmJSStringCodePointAt(_),
+                .wasmJSStringIntoCharCodeArray(_),
+                .wasmJSStringCast(_),
+                .wasmJSStringTest(_),
+                .wasmJSStringConcat(_),
+                .wasmJSStringSubstring(_),
+                .wasmJSStringEquals(_),
+                .wasmJSStringCompare(_),
+                .wasmStringConstant(_),
                 .wasmTruncatef32Toi32(_),
                 .wasmTruncatef64Toi32(_),
                 .wasmExtendi32Toi64(_),
@@ -1997,6 +2095,8 @@ public class JavaScriptLifter: Lifter {
                 .wasmBranchOnNull(_),
                 .wasmBranchOnNonNull(_),
                 .wasmBranchOnCast(_),
+                .wasmBranchOnCastDescEq(_),
+                .wasmBranchOnCastDescEqFail(_),
                 .wasmBranchOnCastFail(_),
                 .wasmBranchTable(_),
                 .wasmBeginIf(_),
@@ -2035,6 +2135,9 @@ public class JavaScriptLifter: Lifter {
                 .wasmArraySet(_),
                 .wasmStructNew(_),
                 .wasmStructNewDefault(_),
+                .wasmStructNewDesc(_),
+                .wasmStructNewDefaultDesc(_),
+                .wasmRefGetDesc(_),
                 .wasmStructGet(_),
                 .wasmStructSet(_),
                 .wasmRefNull(_),
@@ -2047,7 +2150,8 @@ public class JavaScriptLifter: Lifter {
                 .wasmAnyConvertExtern(_),
                 .wasmExternConvertAny(_),
                 .wasmRefTest(_),
-                .wasmRefCast(_):
+                .wasmRefCast(_),
+                .wasmRefCastDescEq(_):
                 fatalError("unreachable")
             }
 
@@ -2139,33 +2243,71 @@ public class JavaScriptLifter: Lifter {
         return "\"\(name)\""
     }
 
-    private func liftMemberAccess(_ name: String, isGuarded: Bool = false) -> String {
+    // TODO: Inlined optional accesses (`o?.a.b`) short-circuit the remainder of the chain
+    // under ECMA-262 §13.3.9, whereas uninlined FuzzIL (`const v1 = o?.a; v1.b`) throws TypeError.
+    // Consider parenthesizing inlined optional expressions `(o?.a).b` or propagating optionality.
+    private func liftMemberAccess(_ name: String, isOptional: Bool = false) -> String {
         if environment.isValidDotNotationName(name) {
-            return (isGuarded ? "?." : ".") + name
+            return (isOptional ? "?." : ".") + name
         }
         let safeName = environment.isValidPropertyIndex(name) ? name : "\"\(name)\""
-        return (isGuarded ? "?." : "") + "[" + safeName + "]"
+        return (isOptional ? "?." : "") + "[" + safeName + "]"
+    }
+
+    private func liftParameterDestructuringPattern<Iter: IteratorProtocol>(
+        _ pattern: DestructuringPattern, iterator: Ref<Iter>
+    ) -> String where Iter.Element == String {
+        return pattern.lift(
+            formatStringKey: { $0 },
+            formatComputedKey: {
+                fatalError("Computed keys in parameter destructuring are not yet supported")
+            },
+            formatTarget: { target in
+                switch target {
+                case .flatBinding:
+                    return iterator.val.next()!
+                case .pattern(let p):
+                    return self.liftParameterDestructuringPattern(p, iterator: iterator)
+                default:
+                    fatalError("Invalid parameter destructuring target")
+                }
+            },
+            formatDefaultValue: {
+                fatalError("Default values in parameter destructuring are not yet supported")
+            }
+        )
     }
 
     private func liftParameters(
         _ parameters: Parameters, as variables: [String], defaultValues: [String?] = []
     ) -> String {
-        assert(parameters.count == variables.count)
         let actualDefaultValues =
             defaultValues.isEmpty
             ? [String?](repeating: nil, count: parameters.count) : defaultValues
         assert(actualDefaultValues.count == parameters.count)
+        let iter = Ref(variables.makeIterator())
         var paramList = [String]()
-        for (v, defaultValue) in zip(variables, actualDefaultValues) {
-            if parameters.hasRestParameter && v == variables.last {
-                assert(defaultValue == nil)
-                paramList.append("..." + v)
-            } else if let defaultValue {
-                paramList.append(v + " = " + defaultValue)
+        for (i, defaultValue) in actualDefaultValues.enumerated() {
+            let p: String
+            if let dp = parameters.destructuringParameters[i] {
+                p = liftParameterDestructuringPattern(dp, iterator: iter)
             } else {
-                paramList.append(v)
+                p = iter.val.next()!
+            }
+
+            if parameters.hasRestParameter && i == parameters.count - 1 {
+                assert(defaultValue == nil)
+                paramList.append("..." + p)
+            } else if let defaultValue {
+                paramList.append(p + " = " + defaultValue)
+            } else {
+                paramList.append(p)
             }
         }
+        assert(
+            iter.val.next() == nil,
+            "Mismatch between mapped inner outputs and destructuring pattern bindings"
+        )
         return paramList.joined(separator: ", ")
     }
 
@@ -2332,119 +2474,72 @@ public class JavaScriptLifter: Lifter {
         return props.joined(separator: ",")
     }
 
-    private func liftDestructuringTarget(
+    private func liftDestructuringTarget<InputIter: IteratorProtocol, OutputIter: IteratorProtocol>(
         _ target: DestructuringPattern.Target, isReassign: Bool,
-        inputIdx: inout Int, outputIdx: inout Int,
-        inputs: [String], outputs: [String],
-        resolveTarget: ((Int) -> String)? = nil
-    ) -> String {
+        inputIterator: Ref<InputIter>, outputIterator: Ref<OutputIter>,
+        resolveTarget: (((Variable, Expression)) -> String)? = nil
+    ) -> String where InputIter.Element == (Variable, Expression), OutputIter.Element == String {
         switch target {
         case .flatBinding:
-            let propertyName =
-                isReassign
-                ? (resolveTarget?(inputIdx) ?? inputs[inputIdx]) : outputs[outputIdx]
-            if isReassign { inputIdx += 1 } else { outputIdx += 1 }
-            return propertyName
+            if isReassign {
+                let (v, expr) = inputIterator.val.next()!
+                return resolveTarget?((v, expr)) ?? expr.text
+            } else {
+                return outputIterator.val.next()!
+            }
         case .pattern(let p):
             return liftDestructuringPattern(
-                p, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
-                inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
-        case .property(let propertyName):
-            let obj = resolveTarget?(inputIdx) ?? inputs[inputIdx]
-            inputIdx += 1
-            return "\(obj)\(liftMemberAccess(propertyName))"
-        case .element(let index):
-            let obj = resolveTarget?(inputIdx) ?? inputs[inputIdx]
-            inputIdx += 1
-            return "\(obj)[\(index)]"
+                p, isReassign: isReassign,
+                inputIterator: inputIterator, outputIterator: outputIterator,
+                resolveTarget: resolveTarget)
+        case .property(let s):
+            let (v, expr) = inputIterator.val.next()!
+            let obj = resolveTarget?((v, expr)) ?? expr.text
+            return "\(obj).\(s)"
+        case .element(let i):
+            let (v, expr) = inputIterator.val.next()!
+            let obj = resolveTarget?((v, expr)) ?? expr.text
+            return "\(obj)[\(i)]"
         case .computedProperty:
-            let obj = resolveTarget?(inputIdx) ?? inputs[inputIdx]
-            inputIdx += 1
-            let key = inputs[inputIdx]
-            inputIdx += 1
+            let (v, expr) = inputIterator.val.next()!
+            let obj = resolveTarget?((v, expr)) ?? expr.text
+            let key = inputIterator.val.next()!.1.text
             return "\(obj)[\(key)]"
-        case .superProperty(let propertyName):
-            return "super\(liftMemberAccess(propertyName))"
-        case .superElement(let index):
-            return "super[\(index)]"
+        case .superProperty(let s):
+            return "super.\(s)"
+        case .superElement(let i):
+            return "super[\(i)]"
         case .superComputedProperty:
-            let key = inputs[inputIdx]
-            inputIdx += 1
+            let key = inputIterator.val.next()!.1.text
             return "super[\(key)]"
+        case .privateProperty(let p):
+            let obj = inputIterator.val.next()!.1.text
+            return "\(obj).#\(p)"
         }
     }
 
-    private func liftDestructuringPattern(
+    private func liftDestructuringPattern<
+        InputIter: IteratorProtocol, OutputIter: IteratorProtocol
+    >(
         _ pattern: DestructuringPattern, isReassign: Bool,
-        inputIdx: inout Int, outputIdx: inout Int,
-        inputs: [String], outputs: [String],
-        resolveTarget: ((Int) -> String)? = nil
-    ) -> String {
-        switch pattern {
-        case .object(let obj):
-            var props = [String]()
-            for prop in obj.properties {
-                var keyStr = ""
-                switch prop.key {
-                case .string(let s): keyStr = "\"\(s)\""
-                case .computed:
-                    keyStr = "[\(inputs[inputIdx])]"
-                    inputIdx += 1
-                }
-
-                let targetStr = liftDestructuringTarget(
-                    prop.target, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
-                    inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
-
-                var defStr = ""
-                if prop.hasDefaultValue {
-                    defStr = "=\(inputs[inputIdx])"
-                    inputIdx += 1
-                }
-
-                props.append("\(keyStr):\(targetStr)\(defStr)")
+        inputIterator: Ref<InputIter>, outputIterator: Ref<OutputIter>,
+        resolveTarget: (((Variable, Expression)) -> String)? = nil
+    ) -> String where InputIter.Element == (Variable, Expression), OutputIter.Element == String {
+        return pattern.lift(
+            formatStringKey: { "\"\($0)\"" },
+            formatComputedKey: {
+                inputIterator.val.next()!.1.text
+            },
+            formatTarget: { target in
+                self.liftDestructuringTarget(
+                    target, isReassign: isReassign,
+                    inputIterator: inputIterator, outputIterator: outputIterator,
+                    resolveTarget: resolveTarget)
+            },
+            formatDefaultValue: {
+                inputIterator.val.next()!.1.text
             }
-            if obj.hasRestElement {
-                let targetStr =
-                    isReassign
-                    ? (resolveTarget?(inputIdx) ?? inputs[inputIdx]) : outputs[outputIdx]
-                if isReassign { inputIdx += 1 } else { outputIdx += 1 }
-                props.append("...\(targetStr)")
-            }
-            return "{\(props.joined(separator: ","))}"
-
-        case .array(let arr):
-            var elems = [String]()
-            for elem in arr.elements {
-                if let target = elem.target {
-                    let targetStr = liftDestructuringTarget(
-                        target, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
-                        inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
-                    if elem.hasDefaultValue {
-                        elems.append("\(targetStr)=\(inputs[inputIdx])")
-                        inputIdx += 1
-                    } else {
-                        elems.append(targetStr)
-                    }
-                } else {
-                    assert(!elem.hasDefaultValue)
-                    elems.append("")
-                }
-            }
-            if let restTarget = arr.restTarget {
-                let targetStr = liftDestructuringTarget(
-                    restTarget, isReassign: isReassign, inputIdx: &inputIdx, outputIdx: &outputIdx,
-                    inputs: inputs, outputs: outputs, resolveTarget: resolveTarget)
-                elems.append("...\(targetStr)")
-            }
-            if let last = arr.elements.last, last.target == nil, arr.restTarget == nil {
-                // In JavaScript, a single trailing comma in an array destructuring pattern (e.g. `[x, ]`)
-                // is ignored, resulting in a pattern of length 1. To represent an actual elision at
-                // the very end (length 2), we must emit `[x, ,]`. Hence the extra empty element.
-                elems.append("")
-            }
-            return "[\(elems.joined(separator: ","))]"
-        }
+        )
     }
 
     private func liftFloatValue(_ value: Double) -> Expression {
@@ -2458,21 +2553,6 @@ public class JavaScriptLifter: Lifter {
             return NegativeNumberLiteral.new(String(value))
         } else {
             return NumberLiteral.new(String(value))
-        }
-    }
-
-    private func haveSpecialHandlingForGuardedOp(_ op: Operation) -> Bool {
-        switch op.opcode {
-        // We handle guarded property loads by emitting an optional chain, so no try-catch is necessary.
-        case .getProperty,
-            .getElement,
-            .getComputedProperty,
-            .deleteProperty,
-            .deleteElement,
-            .deleteComputedProperty:
-            return true
-        default:
-            return false
         }
     }
 

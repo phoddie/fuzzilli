@@ -66,6 +66,7 @@ public let v8Profile = Profile(
         (V8GcGenerator, 5),
         (V8AllocationTimeoutGenerator, 5),
         (V8MajorGcGenerator, 5),
+        (V8SimulateNewspaceFullGenerator, 5),
 
         (WasmStructGenerator, 15),
         (WasmArrayGenerator, 15),
@@ -83,7 +84,8 @@ public let v8Profile = Profile(
         (V8RegExpFuzzer, 1),
         (WasmFastCallFuzzer, 1),
         (FastApiCallFuzzer, 1),
-        (LazyDeoptFuzzer, 1),
+        (IndirectLazyDeoptFuzzer, 1),
+        (RecursiveLazyDeoptFuzzer, 1),
         (HomomorphicFeedbackFuzzer, 1),
         (WasmDeoptFuzzer, 1),
         (WasmInJsInliningFuzzer, 1),
@@ -97,7 +99,7 @@ public let v8Profile = Profile(
     disabledMutators: [],
 
     additionalBuiltins: [
-        "gc": .function([.opt(gcOptions.instanceType)] => (.undefined | .jsPromise)),
+        "gc": .function([.opt(gcOptions.instanceType)] => (.undefined | .jsPromise())),
         "d8": .jsD8,
         "Worker": .jsWorkerConstructor,
         // via --expose-externalize-string:

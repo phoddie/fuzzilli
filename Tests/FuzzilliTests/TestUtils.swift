@@ -14,7 +14,6 @@
 
 import Foundation
 import Testing
-import XCTest
 
 @testable import Fuzzilli
 
@@ -49,30 +48,13 @@ func v(_ n: Int) -> Variable {
     return Variable(number: n)
 }
 
-func GetJavaScriptExecutorOrSkipTest() throws -> JavaScriptExecutor {
-    guard let runner = JavaScriptExecutor() else {
-        throw XCTSkip(
-            "Could not find js shell executable. Install Node.js (or if you want to use a different shell, modify the FUZZILLI_TEST_SHELL variable)."
-        )
-    }
-    return runner
-}
-
-func GetJavaScriptExecutorOrSkipTest(
-    type: JavaScriptExecutor.ExecutorType, withArguments args: [String]
-) throws -> JavaScriptExecutor {
-    guard let runner = JavaScriptExecutor(type: type, withArguments: args) else {
-        throw XCTSkip(
-            "Could not find js shell executable. Install Node.js (or if you want to use a different shell, modify the FUZZILLI_TEST_SHELL variable)."
-        )
-    }
-    return runner
-}
-
-func buildAndLiftProgram(withLiftingOptions: LiftingOptions, buildFunc: (ProgramBuilder) -> Void)
+func buildAndLiftProgram(
+    withLiftingOptions: LiftingOptions = [], config: Configuration? = nil,
+    buildFunc: (ProgramBuilder) -> Void
+)
     -> String
 {
-    let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
+    let liveTestConfig = config ?? Configuration(logLevel: .error, enableInspection: true)
 
     // We have to use the proper JavaScriptEnvironment here.
     // This ensures that we use the available builtins.
@@ -94,8 +76,15 @@ func buildAndLiftProgram(withLiftingOptions: LiftingOptions, buildFunc: (Program
     }
 }
 
-func buildAndLiftProgram(buildFunc: (ProgramBuilder) -> Void) -> String {
-    return buildAndLiftProgram(withLiftingOptions: [], buildFunc: buildFunc)
+func shouldRunCompilerTests() -> Bool {
+    guard let nodejs = JavaScriptExecutor(type: .nodejs, withArguments: ["--allow-natives-syntax"])
+    else {
+        return false
+    }
+    guard JavaScriptParser(executor: nodejs) != nil else {
+        return false
+    }
+    return true
 }
 
 @Suite struct TestUtilsTests {

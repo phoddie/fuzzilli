@@ -30,12 +30,17 @@ if args["-h"] != nil || args["--help"] != nil || args.numPositionalArguments != 
             --profile=name               : Select one of several preconfigured profiles.
                                            Available profiles: \(profiles.keys).
             --jobs=n                     : Total number of fuzzing jobs. This will start a main instance and n-1 worker instances.
+            --workerDelay=n              : The delay in seconds before starting the worker instances. If not specified, a random
+                                           delay between 1 and 10 minutes is used for each worker (default: random), otherwise all workers
+                                           are started at the same time.
             --engine=name                : The fuzzing engine to use. Available engines: "mutation" (default), "hybrid", "multi".
                                            Only the mutation engine should be regarded stable at this point.
             --corpus=name                : The corpus scheduler to use. Available schedulers: "basic" (default), "markov"
             --logLevel=level             : The log level to use. Valid values: "verbose", "info", "warning", "error", "fatal" (default: "info").
             --maxIterations=n            : Run for the specified number of iterations (default: unlimited).
             --maxRuntimeInHours=n        : Run for the specified number of hours (default: unlimited).
+            --maxRuntime=n<s>|<m>|<h>    : Run for the specified amount of time.
+                                           E.g. 30s for 30 seconds, 15m for 15 minutes, 1h for 1 hour.
             --timeout=n                  : Timeout in ms after which to interrupt execution of programs (default depends
                                            on the profile). Or provide an interval like --timeout=200,400. The actual
                                            timeout in this interval will be determined by the start-up tests.
@@ -64,6 +69,8 @@ if args["-h"] != nil || args["--help"] != nil || args.numPositionalArguments != 
                                            Requires --storagePath.
             --statisticsExportInterval=n : Interval in minutes for saving fuzzing statistics to disk (default: 10).
                                            Requires --exportStatistics.
+            --shutdownAfterImport        : Terminate the fuzzer after the initial corpus import is complete.
+                                           Requires --resume or --importCorpus.
             --importCorpus=path          : Imports an existing corpus of FuzzIL programs to build the initial corpus for fuzzing.
                                            The provided path must point to a directory, and all .fzil files in that directory will be imported.
             --corpusImportMode=mode      : The corpus import mode. Possible values:
@@ -103,6 +110,7 @@ if args["-h"] != nil || args["--help"] != nil || args.numPositionalArguments != 
             --tag=tag                    : Optional string tag associated with this instance which will be stored in the settings.json file as well as in crashing samples.
                                            This can for example be used to remember the target revision that is being fuzzed.
             --wasm                       : Enable Wasm CodeGenerators (see WasmCodeGenerators.swift).
+            --wasm-features=features     : Enable experimental Wasm features. A comma-separated list. Available: "custom-descriptors".
             --wasm-opt-path=path         : Path to the wasm-opt binary to enable Binaryen Wasm generation.
             --forDifferentialFuzzing     : Enable additional features for better support of external differential fuzzing.
             --bundle                     : Generate bundles containing multiple JS scripts and modules
@@ -136,11 +144,25 @@ if profile == nil || profileName == nil {
 }
 
 let numJobs = args.int(for: "--jobs") ?? 1
+let workerDelay = args.int(for: "--workerDelay")
 let logLevelName = args["--logLevel"] ?? "info"
 let engineName = args["--engine"] ?? "mutation"
 let corpusName = args["--corpus"] ?? "basic"
 let maxIterations = args.int(for: "--maxIterations") ?? -1
 let maxRuntimeInHours = args.int(for: "--maxRuntimeInHours") ?? -1
+var maxRuntime = -1.0
+if let val = args["--maxRuntime"] {
+    if val.hasSuffix("s") {
+        maxRuntime = Double(val.dropLast()) ?? -1.0
+    } else if val.hasSuffix("m") {
+        maxRuntime = (Double(val.dropLast()) ?? -1.0) * Minutes
+    } else if val.hasSuffix("h") {
+        maxRuntime = (Double(val.dropLast()) ?? -1.0) * Hours
+    }
+    if maxRuntime <= 0 {
+        configError("Invalid value for --maxRuntime: \(val)")
+    }
+}
 let minMutationsPerSample = args.int(for: "--minMutationsPerSample") ?? 25
 let minCorpusSize = args.int(for: "--minCorpusSize") ?? 1000
 let maxCorpusSize = args.int(for: "--maxCorpusSize") ?? Int.max
@@ -154,6 +176,7 @@ let overwrite = args.has("--overwrite")
 let staticCorpus = args.has("--staticCorpus")
 let exportStatistics = args.has("--exportStatistics")
 let statisticsExportInterval = args.uint(for: "--statisticsExportInterval") ?? 10
+let shutdownAfterImport = args.has("--shutdownAfterImport")
 let corpusImportPath = args["--importCorpus"]
 let corpusImportModeName = args["--corpusImportMode"] ?? "default"
 let instanceType = args["--instanceType"] ?? "standalone"
@@ -165,6 +188,14 @@ let argumentRandomization = args.has("--argumentRandomization")
 let additionalArguments = args["--additionalArguments"] ?? ""
 let tag = args["--tag"]
 let enableWasm = args.has("--wasm")
+let wasmFeaturesRaw = args["--wasm-features"]?.split(separator: ",").map(String.init) ?? []
+let validWasmFeatures = ["custom-descriptors"]
+if let unknownFeature = wasmFeaturesRaw.first(where: { !validWasmFeatures.contains($0) }) {
+    configError(
+        "Unknown Wasm feature \"\(unknownFeature)\". Valid features are: \(validWasmFeatures.joined(separator: ", "))"
+    )
+}
+let enableCustomDescriptors = wasmFeaturesRaw.contains("custom-descriptors")
 let wasmOptPath = args["--wasm-opt-path"]
 let generateBundle = args.has("--bundle")
 let forDifferentialFuzzing = args.has("--forDifferentialFuzzing")
@@ -202,13 +233,21 @@ guard numJobs >= 1 else {
 }
 
 var exitCondition = Fuzzer.ExitCondition.none
-guard maxIterations == -1 || maxRuntimeInHours == -1 else {
-    configError("Must only specify one of --maxIterations and --maxRuntimeInHours")
+var numExitConditions = 0
+if maxIterations != -1 { numExitConditions += 1 }
+if maxRuntimeInHours != -1 { numExitConditions += 1 }
+if maxRuntime != -1.0 { numExitConditions += 1 }
+
+if numExitConditions > 1 {
+    configError("Must only specify one of --maxIterations, --maxRuntimeInHours, and --maxRuntime")
 }
+
 if maxIterations != -1 {
     exitCondition = .iterationsPerformed(maxIterations)
 } else if maxRuntimeInHours != -1 {
     exitCondition = .timeFuzzed(Double(maxRuntimeInHours) * Hours)
+} else if maxRuntime != -1.0 {
+    exitCondition = .timeFuzzed(maxRuntime)
 }
 
 let logLevelByName: [String: LogLevel] = [
@@ -247,6 +286,10 @@ if corpusName == "markov"
 
 if (resume || overwrite) && storagePath == nil {
     configError("--resume and --overwrite require --storagePath")
+}
+
+if shutdownAfterImport && !resume && corpusImportPath == nil {
+    configError("--shutdownAfterImport requires --resume or --importCorpus")
 }
 
 if corpusName == "markov" && staticCorpus {
@@ -491,6 +534,7 @@ func makeFuzzer(with configuration: Configuration) -> Fuzzer {
         // Can be enabled for experimental use, ConcatMutator is a limited version of CombineMutator
         // (ConcatMutator(),                   1),
         (OperationMutator(), 1),
+        (PropertyAccessorMutator(), 1),
         (CombineMutator(), 1),
         // Include this once it does more than just remove unneeded try-catch
         // (FixupMutator()),                   1),
@@ -555,6 +599,10 @@ func makeFuzzer(with configuration: Configuration) -> Fuzzer {
         }
 
         programTemplates.append(template, withWeight: weight)
+    }
+
+    if wasmOptPath != nil {
+        programTemplates.append(BinaryenWasmFuzzer, withWeight: 2)
     }
 
     // Filter out ProgramTemplates that will use Wasm if we have not enabled it.
@@ -652,13 +700,19 @@ let mainConfig = Configuration(
     corpusGenerationIterations: corpusGenerationIterations,
     forDifferentialFuzzing: forDifferentialFuzzing,
     instanceId: 0,
-    dumplingEnabled: profile.isDifferential)
+    dumplingEnabled: profile.isDifferential,
+    enableCustomDescriptors: enableCustomDescriptors)
 
 let fuzzer = makeFuzzer(with: mainConfig)
 
 // Create a "UI". We do this now, before fuzzer initialization, so
 // we are able to print log messages generated during initialization.
 let ui = TerminalUI(for: fuzzer)
+
+// DispatchGroup to ensure all fuzzer instances (main + workers) finish shutting down before process exits.
+let shutdownGroup = DispatchGroup()
+var workers: [Fuzzer] = []
+var mainShutdownReason: ShutdownReason? = nil
 
 // Install signal handlers to terminate the fuzzer gracefully.
 var signalSources: [DispatchSourceSignal] = []
@@ -676,26 +730,52 @@ for sig in [SIGINT, SIGTERM] {
     signalSources.append(source)
 }
 
+// Exit this process when all fuzzer instances have stopped.
+shutdownGroup.enter()
+shutdownGroup.notify(queue: DispatchQueue.main) {
+    if resume, let path = storagePath {
+        // Check if we have an old_corpus directory on disk, this can happen if the user Ctrl-C's during an import.
+        if FileManager.default.fileExists(atPath: path + "/old_corpus") {
+            logger.info(
+                "Corpus import aborted. The old corpus is now in \(path + "/old_corpus").")
+            logger.info("You can recover the old corpus by moving it to \(path + "/corpus").")
+        }
+    }
+    let code = mainShutdownReason?.toExitCode() ?? 0
+    if code != 0 {
+        print("Aborting execution after a fatal error.")
+    }
+    exit(code)
+}
+
 // Remaining fuzzer initialization must happen on the fuzzer's dispatch queue.
 fuzzer.sync {
     // Always want some statistics.
     fuzzer.addModule(Statistics())
 
-    // Exit this process when the main fuzzer stops.
-    fuzzer.registerEventListener(for: fuzzer.events.ShutdownComplete) { reason in
-        if resume, let path = storagePath {
-            // Check if we have an old_corpus directory on disk, this can happen if the user Ctrl-C's during an import.
-            if FileManager.default.fileExists(atPath: path + "/old_corpus") {
-                logger.info(
-                    "Corpus import aborted. The old corpus is now in \(path + "/old_corpus").")
-                logger.info("You can recover the old corpus by moving it to \(path + "/corpus").")
+    // ---- Marker for patch insertion ----
+    // An internal V8 component needs to insert a module for the ClusterFuzz uploader.
+    // This module should be inserted
+    // <<--- here
+    // and these extra comments are just padding increasing the chance that the patch applies
+    // cleanly.
+    // ---- End of marker ----
+
+    fuzzer.registerEventListener(for: fuzzer.events.Shutdown) { _ in
+        DispatchQueue.main.async {
+            for worker in workers {
+                worker.async {
+                    worker.shutdown(reason: .parentShutdown)
+                }
             }
         }
-        let code = reason.toExitCode()
-        if code != 0 {
-            print("Aborting execution after a fatal error.")
+    }
+
+    fuzzer.registerEventListener(for: fuzzer.events.ShutdownComplete) { reason in
+        DispatchQueue.main.async {
+            mainShutdownReason = reason
+            shutdownGroup.leave()
         }
-        exit(code)
     }
 
     // Store samples to disk if requested.
@@ -777,6 +857,12 @@ fuzzer.sync {
             logger.info(
                 "Corpus import after resume took \((String(format: "%.0f", duration)))s (\(humanReadableDuration))."
             )
+
+            if shutdownAfterImport {
+                fuzzer.async {
+                    fuzzer.shutdown(reason: .finished)
+                }
+            }
         }
 
         fuzzer.scheduleCorpusImport(corpus, importMode: .interestingOnly(shouldMinimize: false))  // We assume that the programs are already minimized
@@ -801,6 +887,12 @@ fuzzer.sync {
             logger.info(
                 "Existing corpus import took \((String(format: "%.0f", duration)))s (\(humanReadableDuration))."
             )
+
+            if shutdownAfterImport {
+                fuzzer.async {
+                    fuzzer.shutdown(reason: .finished)
+                }
+            }
         }
 
         fuzzer.scheduleCorpusImport(corpus, importMode: corpusImportMode)
@@ -834,22 +926,44 @@ for i in 1..<numJobs {
         corpusGenerationIterations: corpusGenerationIterations,
         forDifferentialFuzzing: forDifferentialFuzzing,
         instanceId: i,
-        dumplingEnabled: profile.isDifferential)
+        dumplingEnabled: profile.isDifferential,
+        enableCustomDescriptors: enableCustomDescriptors)
 
     let worker = makeFuzzer(with: workerConfig)
-    worker.async {
-        // Wait some time between starting workers to reduce the load on the main instance.
-        // If we start the workers right away, they will all very quickly find new coverage
-        // and send lots of (probably redundant) programs to the main instance.
-        let minDelay = 1 * Minutes
-        let maxDelay = 10 * Minutes
-        let delay = Double.random(in: minDelay...maxDelay)
-        Thread.sleep(forTimeInterval: delay)
+    workers.append(worker)
 
-        worker.addModule(Statistics())
-        worker.addModule(ThreadChild(for: worker, parent: fuzzer))
-        worker.initialize()
-        worker.start()
+    // Add each worker to the shutdownGroup. When they shutdown, they leave the group making it easy
+    // for the main process to wait for the "final" process-wide shutdown until all workers have
+    // shut down gracefully.
+    shutdownGroup.enter()
+    worker.sync {
+        worker.registerEventListener(for: worker.events.ShutdownComplete) { _ in
+            shutdownGroup.leave()
+        }
+    }
+
+    // Wait some time between starting workers to reduce the load on the main instance.
+    // If we start the workers right away, they will all very quickly find new coverage
+    // and send lots of (probably redundant) programs to the main instance.
+    let minDelay: Double
+    let maxDelay: Double
+    if let delay = workerDelay {
+        minDelay = Double(delay) * Seconds
+        maxDelay = Double(delay) * Seconds
+    } else {
+        minDelay = 1 * Minutes
+        maxDelay = 10 * Minutes
+    }
+    let delay = Double.random(in: minDelay...maxDelay)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        worker.async {
+            guard !worker.isStopped else { return }
+
+            worker.addModule(Statistics())
+            worker.addModule(ThreadChild(for: worker, parent: fuzzer))
+            worker.initialize()
+            worker.start()
+        }
     }
 }
 

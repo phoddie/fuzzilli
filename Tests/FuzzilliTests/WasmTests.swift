@@ -276,7 +276,7 @@ struct WasmFoundationTests {
             let typeDefs = b.wasmDefineTypeGroup {
                 let structDef = b.wasmDefineStructType(
                     fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
-                    indexTypes: [])
+                )
                 let arrayDef = b.wasmDefineArrayType(elementType: .wasmi32, mutability: true)
                 let signatureDef = b.wasmDefineSignatureType(
                     signature: [] => [.wasmi32], indexTypes: [])
@@ -414,6 +414,382 @@ struct WasmFoundationTests {
         }
 
         testForOutput(program: jsProg, runner: runner, outputString: "42\n4141\n1337\n")
+    }
+
+    @Test func testJSStringLength() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [.wasmJSStringRef()] => [.wasmi32]) {
+                    function, _, args in
+                    let len = function.wasmJSStringLength(args[0])
+                    return [len]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+            let dummyString = b.loadString("dummy")
+            let res = b.callMethod(main, on: exports, withArgs: [dummyString])
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "5\n")
+    }
+
+    @Test func testJSStringFromCharCodeArray() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let typeGroup = b.wasmDefineTypeGroup {
+                return [
+                    b.wasmDefineArrayType(
+                        elementType: .wasmPackedI16, mutability: true, isFinal: true)
+                ]
+            }
+            let arrayi16 = typeGroup[0]
+
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmRefJSString()]) {
+                    function, _, args in
+                    let c1 = function.consti32(65)  // 'A'
+                    let c2 = function.consti32(66)  // 'B'
+                    let array = function.wasmArrayNewFixed(arrayType: arrayi16, elements: [c1, c2])
+                    let start = function.consti32(0)
+                    let end = function.consti32(2)
+                    let str = function.wasmJSStringFromCharCodeArray(array, start, end)
+                    return [str]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+            let res = b.callMethod(main, on: exports, withArgs: [])
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "AB\n")
+    }
+
+    @Test func testJSStringFromCharCode() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmRefJSString()]) {
+                    function, _, args in
+                    let c = function.consti32(65)  // 'A'
+                    let str = function.wasmJSStringFromCharCode(c)
+                    return [str]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+            let res = b.callMethod(main, on: exports, withArgs: [])
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "A\n")
+    }
+
+    @Test func testJSStringFromCodePoint() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmRefJSString()]) {
+                    function, _, args in
+                    let c = function.consti32(0x1F600)  // 😀
+                    let str = function.wasmJSStringFromCodePoint(c)
+                    return [str]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+            let res = b.callMethod(main, on: exports, withArgs: [])
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "😀\n")
+    }
+
+    @Test func testJSStringCharCodeAt() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) {
+                    function, _, args in
+                    let c = function.consti32(65)  // 'A'
+                    let str = function.wasmJSStringFromCharCode(c)
+                    let index = function.consti32(0)
+                    let charCode = function.wasmJSStringCharCodeAt(str, index)
+                    return [charCode]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+            let res = b.callMethod(main, on: exports, withArgs: [])
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "65\n")
+    }
+
+    @Test func testJSStringCodePointAt() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) {
+                    function, _, args in
+                    let c = function.consti32(0x1F600)  // 😀
+                    let str = function.wasmJSStringFromCodePoint(c)
+                    let index = function.consti32(0)
+                    let charCode = function.wasmJSStringCodePointAt(str, index)
+                    return [charCode]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+            let res = b.callMethod(main, on: exports, withArgs: [])
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "128512\n")  // 0x1F600 is 128512 in decimal
+    }
+
+    @Test func testJSStringIntoCharCodeArray() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let typeGroup = b.wasmDefineTypeGroup {
+                return [
+                    b.wasmDefineArrayType(
+                        elementType: .wasmPackedI16, mutability: true, isFinal: true)
+                ]
+            }
+            let arrayi16 = typeGroup[0]
+
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [.wasmRefJSString()] => [.wasmRefJSString()]) {
+                    function, _, args in
+                    let str = args[0]
+                    let length = function.wasmJSStringLength(str)
+
+                    let array = function.wasmArrayNewDefault(arrayType: arrayi16, size: length)
+                    let start = function.consti32(0)
+
+                    let _ = function.wasmJSStringIntoCharCodeArray(str, array, start)
+                    let resultStr = function.wasmJSStringFromCharCodeArray(array, start, length)
+
+                    return [resultStr]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+
+            let inputStr = b.loadString("Hello 😀")
+            let resultStr = b.callMethod(main, on: exports, withArgs: [inputStr])
+            let areEqual = b.compare(inputStr, with: resultStr, using: .strictEqual)
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: areEqual)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "true\n")
+    }
+
+    @Test func testJSStringCast() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [.wasmExternRef()] => [.wasmRefJSString()]) {
+                    function, _, args in
+                    let str = function.wasmJSStringCast(args[0])
+                    return [str]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+
+            let inputStr = b.loadString("Cast me!")
+            let res = b.callMethod(main, on: exports, withArgs: [inputStr])
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+
+            b.buildTryCatchFinally {
+                let inputNum = b.loadInt(42)
+                b.callMethod(main, on: exports, withArgs: [inputNum])
+                b.callFunction(outputFunc, withArgs: [b.loadString("Success")])
+            } catchBody: { _ in
+                b.callFunction(outputFunc, withArgs: [b.loadString("Trapped!")])
+            }
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "Cast me!\nTrapped!\n")
+    }
+
+    @Test func testJSStringTest() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [.wasmExternRef()] => [.wasmi32]) {
+                    function, _, args in
+                    let isString = function.wasmJSStringTest(args[0])
+                    return [isString]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+
+            let inputStr = b.loadString("Hello")
+            let resStr = b.callMethod(main, on: exports, withArgs: [inputStr])
+
+            let inputNum = b.loadInt(42)
+            let resNum = b.callMethod(main, on: exports, withArgs: [inputNum])
+
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: resStr)])
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: resNum)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "1\n0\n")
+    }
+
+    @Test func testJSStringConcat() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(
+                    with: [.wasmJSStringRef(), .wasmJSStringRef()] => [.wasmRefJSString()]
+                ) {
+                    function, _, args in
+                    let concatenated = function.wasmJSStringConcat(args[0], args[1])
+                    return [concatenated]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+
+            let str1 = b.loadString("Hello, ")
+            let str2 = b.loadString("World!")
+            let res = b.callMethod(main, on: exports, withArgs: [str1, str2])
+
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "Hello, World!\n")
+    }
+
+    @Test func testJSStringSubstring() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [.wasmJSStringRef()] => [.wasmRefJSString()]) {
+                    function, _, args in
+                    let start = function.consti32(7)
+                    let end = function.consti32(11)
+                    let sub = function.wasmJSStringSubstring(args[0], start, end)
+                    return [sub]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+
+            let str = b.loadString("Hello, Wasm!")
+            let res = b.callMethod(main, on: exports, withArgs: [str])
+
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: res)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "Wasm\n")
+    }
+
+    @Test func testJSStringEquals() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(
+                    with: [.wasmJSStringRef(), .wasmJSStringRef()] => [.wasmi32]
+                ) {
+                    function, _, args in
+                    let isEqual = function.wasmJSStringEquals(args[0], args[1])
+                    return [isEqual]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+
+            let str1 = b.loadString("Same")
+            let str2 = b.loadString("Same")
+            let str3 = b.loadString("ButDifferent")
+
+            let resEq = b.callMethod(main, on: exports, withArgs: [str1, str2])
+            let resNeq = b.callMethod(main, on: exports, withArgs: [str1, str3])
+
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: resEq)])
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: resNeq)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "1\n0\n")
+    }
+
+    @Test func testJSStringCompare() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(
+                    with: [.wasmJSStringRef(), .wasmJSStringRef()] => [.wasmi32]
+                ) {
+                    function, _, args in
+                    let cmp = function.wasmJSStringCompare(args[0], args[1])
+                    return [cmp]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+
+            let strA = b.loadString("a")
+            let strB = b.loadString("b")
+
+            let resCmp1 = b.callMethod(main, on: exports, withArgs: [strA, strB])
+            let resCmp2 = b.callMethod(main, on: exports, withArgs: [strB, strA])
+            let resCmp3 = b.callMethod(main, on: exports, withArgs: [strA, strA])
+
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: resCmp1)])
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: resCmp2)])
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: resCmp3)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "-1\n1\n0\n")
+    }
+
+    @Test func testWasmStringConstants() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            let module = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmRefJSString()]) {
+                    function, _, args in
+                    let str1 = function.wasmStringConstant("Hello, ")
+                    let str2 = function.wasmStringConstant("World!")
+                    let result = function.wasmJSStringConcat(str1, str2)
+                    return [result]
+                }
+            }
+
+            let exports = module.loadExports()
+            let main = module.getExportedMethod(at: 0)
+
+            let res = b.callMethod(main, on: exports, withArgs: [])
+
+            let expected = b.loadString("Hello, World!")
+            let areEqual = b.compare(expected, with: res, using: .strictEqual)
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [b.callMethod("toString", on: areEqual)])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "true\n")
     }
 
     @Test func testImports() throws {
@@ -963,7 +1339,134 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "null\n-42\n")
     }
 
-    func importedTableTestCase(isTable64: Bool) throws {
+    @Test func testStartFunction() throws {
+        let runner = JavaScriptExecutor()!
+        let jsProg = buildAndLiftProgram { b in
+            b.emit(BeginWasmModule())
+            let module = b.currentWasmModule
+
+            let global = module.addGlobal(wasmGlobal: .wasmi32(0), isMutable: true)
+
+            let startFunc = module.addWasmFunction(with: [] => []) { function, _, _ in
+                let val = function.consti32(1337)
+                function.wasmStoreGlobal(globalVariable: global, to: val)
+                return []
+            }
+
+            b.emit(EndWasmModule(hasStartFunction: true), withInputs: [startFunc])
+
+            let exports = module.loadExports()
+            let wg0 = b.getProperty("wg0", of: exports)
+            let valueWg0 = b.getProperty("value", of: wg0)
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [valueWg0])
+        }
+        testForOutput(program: jsProg, runner: runner, outputString: "1337\n")
+    }
+
+    @Test func testGlobalIndexTyped() throws {
+        let runner = JavaScriptExecutor()!
+        let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
+
+        let fuzzer = makeMockFuzzer(config: liveTestConfig, environment: JavaScriptEnvironment())
+        let jsProg = fuzzer.sync {
+            let b = fuzzer.makeBuilder()
+
+            let structType = b.wasmDefineTypeGroup {
+                [
+                    b.wasmDefineStructType(
+                        fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
+                        isFinal: true
+                    )
+                ]
+            }[0]
+
+            let module = b.buildWasmModule { wasmModule in
+                let global = wasmModule.addGlobal(
+                    wasmGlobal: .indexRef, isMutable: true, typeDef: structType)
+
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) { function, _, _ in
+                    let i32 = function.consti32(42)
+                    let structInst = function.wasmStructNew(structType: structType, fields: [i32])
+                    function.wasmStoreGlobal(globalVariable: global, to: structInst)
+
+                    let loadedStruct = function.wasmLoadGlobal(globalVariable: global)
+                    let loadedI32 = function.wasmStructGet(theStruct: loadedStruct, fieldIndex: 0)
+                    return [loadedI32]
+                }
+            }
+
+            let exports = module.loadExports()
+            let res = b.callMethod(module.getExportedMethod(at: 0), on: exports)
+
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [res])
+
+            let prog = b.finalize()
+            return fuzzer.lifter.lift(prog)
+        }
+
+        testForOutput(program: jsProg, runner: runner, outputString: "42\n")
+    }
+
+    @Test func testImportedGlobalIndexTyped() throws {
+        let runner = JavaScriptExecutor()!
+        let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
+
+        let fuzzer = makeMockFuzzer(config: liveTestConfig, environment: JavaScriptEnvironment())
+        let jsProg = fuzzer.sync {
+            let b = fuzzer.makeBuilder()
+
+            let structType = b.wasmDefineTypeGroup {
+                [
+                    b.wasmDefineStructType(
+                        fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
+                        isFinal: true
+                    )
+                ]
+            }[0]
+
+            let module1 = b.buildWasmModule { wasmModule in
+                let globalVar = wasmModule.addGlobal(
+                    wasmGlobal: .indexRef, isMutable: true, typeDef: structType)
+
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) { function, _, _ in
+                    let i32 = function.consti32(42)
+                    let structInst = function.wasmStructNew(structType: structType, fields: [i32])
+                    function.wasmStoreGlobal(globalVariable: globalVar, to: structInst)
+                    return [i32]
+                }
+            }
+
+            let exports1 = module1.loadExports()
+            _ = b.callMethod(module1.getExportedMethod(at: 0), on: exports1)
+            let importedGlobal = b.getProperty("wg0", of: exports1)
+
+            let module2 = b.buildWasmModule { wasmModule in
+                wasmModule.addWasmFunction(with: [] => [.wasmi32]) { function, _, _ in
+                    // Only load the global. Crucially, do NOT use it in an instruction that expects an .anyIndexRef
+                    // input type (like wasmStructGet), otherwise the lifter will implicitly pull in the type
+                    // definition and mask the bug.
+                    _ = function.wasmLoadGlobal(globalVariable: importedGlobal)
+                    return [function.consti32(42)]
+                }
+            }
+
+            let exports2 = module2.loadExports()
+            let res2 = b.callMethod(module2.getExportedMethod(at: 0), on: exports2)
+
+            let outputFunc = b.createNamedVariable(forBuiltin: "output")
+            b.callFunction(outputFunc, withArgs: [res2])
+
+            let prog = b.finalize()
+            return fuzzer.lifter.lift(prog)
+        }
+
+        testForOutput(program: jsProg, runner: runner, outputString: "42\n")
+    }
+
+    @Test(arguments: [false, true])
+    func testImportedTable(isTable64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
 
@@ -1021,15 +1524,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "{\"a\":41,\"b\":42}\n")
     }
 
-    @Test func testImportedTable32() throws {
-        try importedTableTestCase(isTable64: false)
-    }
-
-    @Test func testImportedTable64() throws {
-        try importedTableTestCase(isTable64: true)
-    }
-
-    func defineTable(isTable64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testDefineTable(isTable64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .warning, enableInspection: true)
 
@@ -1100,14 +1596,6 @@ struct WasmFoundationTests {
         }
 
         testForOutput(program: jsProg, runner: runner, outputString: "43\n11\n")
-    }
-
-    @Test func testDefineTable32() throws {
-        try defineTable(isTable64: false)
-    }
-
-    @Test func testDefineTable64() throws {
-        try defineTable(isTable64: true)
     }
 
     @Test func testCallIndirect() throws {
@@ -1190,7 +1678,7 @@ struct WasmFoundationTests {
                     fields: [
                         WasmStructTypeDescription.Field(type: .wasmi32, mutability: true),
                         WasmStructTypeDescription.Field(type: .wasmi64, mutability: true),
-                    ], indexTypes: [])
+                    ])
 
                 // Signature: (array, struct) -> (struct)
                 // We use .wasmRef(.Index(), nullability: false) as placeholders in the signature and provide the actual type definitions in indexTypes.
@@ -1582,7 +2070,8 @@ struct WasmFoundationTests {
 
     // Test every memory testcase for both memory32 and memory64.
 
-    func importedMemoryTestCase(isShared: Bool, isMemory64: Bool) throws {
+    @Test(arguments: [false, true], [false, true])
+    func testImportedMemory(isShared: Bool, isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
 
@@ -1643,17 +2132,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "1337\n0\n1337\n")
     }
 
-    @Test func testImportedMemory32() throws {
-        try importedMemoryTestCase(isShared: false, isMemory64: false)
-        try importedMemoryTestCase(isShared: true, isMemory64: false)
-    }
-
-    @Test func testImportedMemory64() throws {
-        try importedMemoryTestCase(isShared: false, isMemory64: true)
-        try importedMemoryTestCase(isShared: true, isMemory64: true)
-    }
-
-    func defineMemory(isShared: Bool, isMemory64: Bool) throws {
+    @Test(arguments: [false, true], [false, true])
+    func testDefineMemory(isShared: Bool, isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
 
@@ -1692,18 +2172,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "1337\n")
     }
 
-    @Test func testDefineMemory32() throws {
-        try defineMemory(isShared: false, isMemory64: false)
-        try defineMemory(isShared: true, isMemory64: false)
-    }
-
-    @Test func testDefineMemory64() throws {
-        try defineMemory(isShared: false, isMemory64: true)
-        try defineMemory(isShared: true, isMemory64: true)
-    }
-
-    // TODO(mliedtke): Adapt this and other test cases to use parameterized tests instead.
-    func simpleDataSegmentInit(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testDataSegmentWithMemory(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
         let jsProg = buildAndLiftProgram { b in
@@ -1735,14 +2205,6 @@ struct WasmFoundationTests {
 
         // "AAAABBBB" -> 0x4242424241414141
         testForOutput(program: jsProg, runner: runner, outputString: "4774451407296217409\n")
-    }
-
-    @Test func testDataSegmentWithMemory32() throws {
-        try simpleDataSegmentInit(isMemory64: false)
-    }
-
-    @Test func testDataSegmentWithMemory64() throws {
-        try simpleDataSegmentInit(isMemory64: true)
     }
 
     @Test func testDropDataSegment() throws {
@@ -1779,6 +2241,7 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "")
     }
 
+    @Test(arguments: [false, true])
     func testInitSingleMemoryFromTwoSegments(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
@@ -1816,14 +2279,7 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "4774451407296217409\n")
     }
 
-    @Test func testInitSingleMemoryFromTwoSegments32() throws {
-        try testInitSingleMemoryFromTwoSegments(isMemory64: false)
-    }
-
-    @Test func testInitSingleMemoryFromTwoSegments64() throws {
-        try testInitSingleMemoryFromTwoSegments(isMemory64: true)
-    }
-
+    @Test(arguments: [false, true])
     func testInitTwoMemoriesFromOneSegment(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
@@ -1865,14 +2321,7 @@ struct WasmFoundationTests {
             outputString: "4774451407296217409,4774451407296217409\n")
     }
 
-    @Test func testInitTwoMemoriesFromOneSegment32() throws {
-        try testInitTwoMemoriesFromOneSegment(isMemory64: false)
-    }
-
-    @Test func testInitTwoMemoriesFromOneSegment64() throws {
-        try testInitTwoMemoriesFromOneSegment(isMemory64: true)
-    }
-
+    @Test(arguments: [false, true])
     func testMemoryInitOutOfBoundsMemory(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
@@ -1900,14 +2349,7 @@ struct WasmFoundationTests {
             errorMessageContains: "RuntimeError: memory access out of bounds")
     }
 
-    @Test func testMemoryInitOutOfBoundsMemory32() throws {
-        try testMemoryInitOutOfBoundsMemory(isMemory64: false)
-    }
-
-    @Test func testMemoryInitOutOfBoundsMemory64() throws {
-        try testMemoryInitOutOfBoundsMemory(isMemory64: true)
-    }
-
+    @Test(arguments: [false, true])
     func testMemoryInitOutOfBoundsSegment(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
@@ -1933,14 +2375,6 @@ struct WasmFoundationTests {
         testForErrorOutput(
             program: jsProg, runner: runner,
             errorMessageContains: "RuntimeError: memory access out of bounds")
-    }
-
-    @Test func testMemoryInitOutOfBoundsSegment32() throws {
-        try testMemoryInitOutOfBoundsSegment(isMemory64: false)
-    }
-
-    @Test func testMemoryInitOutOfBoundsSegment64() throws {
-        try testMemoryInitOutOfBoundsSegment(isMemory64: true)
     }
 
     @Test func testMemory64Index() throws {
@@ -1972,7 +2406,8 @@ struct WasmFoundationTests {
     }
 
     // This test doesn't check the result of the Wasm loads, just exectues them.
-    func allMemoryLoadTypesExecution(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testAllMemoryLoadTypesExecution(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
 
@@ -2009,16 +2444,9 @@ struct WasmFoundationTests {
         testExecuteScript(program: jsProg, runner: runner)
     }
 
-    @Test func testAllMemoryLoadTypesExecutionOnMemory32() throws {
-        try allMemoryLoadTypesExecution(isMemory64: false)
-    }
-
-    @Test func testAllMemoryLoadTypesExecutionOnMemory64() throws {
-        try allMemoryLoadTypesExecution(isMemory64: true)
-    }
-
     // This test doesn't check the result of the Wasm stores, just executes them.
-    func allMemoryStoreTypesExecution(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testAllMemoryStoreTypesExecution(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
 
@@ -2062,15 +2490,8 @@ struct WasmFoundationTests {
         testExecuteScript(program: jsProg, runner: runner)
     }
 
-    @Test func testAllMemoryStoreTypesExecutionOnMemory32() throws {
-        try allMemoryStoreTypesExecution(isMemory64: false)
-    }
-
-    @Test func testAllMemoryStoreTypesExecutionOnMemory64() throws {
-        try allMemoryStoreTypesExecution(isMemory64: true)
-    }
-
-    func multiMemory(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testMultiMemory(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
 
@@ -2133,15 +2554,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "6\n")
     }
 
-    @Test func testMultiMemory32() throws {
-        try multiMemory(isMemory64: false)
-    }
-
-    @Test func testMultiMemory64() throws {
-        try multiMemory(isMemory64: true)
-    }
-
-    func memorySize(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testMemorySize(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
         let fuzzer = makeMockFuzzer(config: liveTestConfig, environment: JavaScriptEnvironment())
@@ -2181,15 +2595,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "7,-1,7\n5,5,6\n0,0,1\n")
     }
 
-    @Test func testMemorySize32() throws {
-        try memorySize(isMemory64: false)
-    }
-
-    @Test func testMemorySize64() throws {
-        try memorySize(isMemory64: true)
-    }
-
-    func memoryBulkOperations(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testMemoryBulkOperations(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
 
@@ -2229,15 +2636,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "43690\n")  // 0x 00 00 AA AA
     }
 
-    @Test func testMemoryBulkOperations32() throws {
-        try memoryBulkOperations(isMemory64: false)
-    }
-
-    @Test func testMemoryBulkOperations64() throws {
-        try memoryBulkOperations(isMemory64: true)
-    }
-
-    func memoryCopy(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testMemoryCopy(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
         let jsProg = buildAndLiftProgram { b in
@@ -2285,15 +2685,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "0,222,0\n")
     }
 
-    @Test func testMemoryCopy32() throws {
-        try memoryCopy(isMemory64: false)
-    }
-
-    @Test func testMemoryCopy64() throws {
-        try memoryCopy(isMemory64: true)
-    }
-
-    func wasmSimdLoadStore(isMemory64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testWasmSimdLoadStore(isMemory64: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
         let fuzzer = makeMockFuzzer(config: liveTestConfig, environment: JavaScriptEnvironment())
@@ -2747,14 +3140,6 @@ struct WasmFoundationTests {
             )
         }
         testForOutput(program: jsProg, runner: runner, outputString: expected)
-    }
-
-    @Test func testWasmSimdLoadStoreOnMemory32() throws {
-        try wasmSimdLoadStore(isMemory64: false)
-    }
-
-    @Test func testWasmSimdLoadStoreOnMemory64() throws {
-        try wasmSimdLoadStore(isMemory64: true)
     }
 
     func wasmSimdSplatAndExtractLane(
@@ -5646,7 +6031,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "100\n123\n")
     }
 
-    func tagExportedToDifferentWasmModule(defineInWasm: Bool) throws {
+    @Test(arguments: [true, false])
+    func testTagExportedToDifferentWasmModule(defineInWasm: Bool) throws {
         let runner = JavaScriptExecutor()!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
         let fuzzer = makeMockFuzzer(config: liveTestConfig, environment: JavaScriptEnvironment())
@@ -5718,14 +6104,6 @@ struct WasmFoundationTests {
             return fuzzer.lifter.lift(prog)
         }
         testForOutput(program: jsProg, runner: runner, outputString: "42\n")
-    }
-
-    @Test func testTagExportedToDifferentWasmModule() throws {
-        try tagExportedToDifferentWasmModule(defineInWasm: true)
-    }
-
-    @Test func testImportedTagReexportedToDifferentWasmModule() throws {
-        try tagExportedToDifferentWasmModule(defineInWasm: false)
     }
 
     // Test that defining a Wasm tag in JS with all supported abstract ref types does not fail.
@@ -6071,7 +6449,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "")
     }
 
-    func wasmTableInit(isTable64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testTableInit(isTable64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
         let jsProg = buildAndLiftProgram { b in
@@ -6125,15 +6504,8 @@ struct WasmFoundationTests {
         testForOutput(program: jsProg, runner: runner, outputString: "1,2\n")
     }
 
-    @Test func testTableInit32() throws {
-        try wasmTableInit(isTable64: false)
-    }
-
-    @Test func testTableInit64() throws {
-        try wasmTableInit(isTable64: true)
-    }
-
-    func wasmTableCopy(isTable64: Bool) throws {
+    @Test(arguments: [false, true])
+    func testTableCopy(isTable64: Bool) throws {
         let runner = JavaScriptExecutor()!
 
         let jsProg = buildAndLiftProgram { b in
@@ -6184,14 +6556,6 @@ struct WasmFoundationTests {
         }
 
         testForOutput(program: jsProg, runner: runner, outputString: "1,2\n")
-    }
-
-    @Test func testTableCopy32() throws {
-        try wasmTableCopy(isTable64: false)
-    }
-
-    @Test func testTableCopy64() throws {
-        try wasmTableCopy(isTable64: true)
     }
 }
 
@@ -6382,13 +6746,13 @@ struct WasmGCTests {
         let jsProg = buildAndLiftProgram { b in
             let types = b.wasmDefineTypeGroup {
                 let superStruct = b.wasmDefineStructType(
-                    fields: [.init(type: .wasmi32, mutability: true)], indexTypes: [],
+                    fields: [.init(type: .wasmi32, mutability: true)],
                     isFinal: false)
                 let subStruct = b.wasmDefineStructType(
                     fields: [
                         .init(type: .wasmi32, mutability: true),
                         .init(type: .wasmi64, mutability: true),
-                    ], indexTypes: [], superTypeDef: superStruct, isFinal: false)
+                    ], superTypeDef: superStruct, isFinal: false)
 
                 let superArray = b.wasmDefineArrayType(
                     elementType: .wasmRef(.Index(), nullability: true), mutability: false,
@@ -6452,12 +6816,12 @@ struct WasmGCTests {
 
             let types = b.wasmDefineTypeGroup {
                 let superStruct = b.wasmDefineStructType(
-                    fields: [.init(type: .wasmi32, mutability: true)], indexTypes: [],
+                    fields: [.init(type: .wasmi32, mutability: true)],
                     isFinal: false)
                 let subStruct = b.wasmDefineStructType(
                     fields: [
                         .init(type: .wasmi32, mutability: true)
-                    ], indexTypes: [], superTypeDef: superStruct, isFinal: true)
+                    ], superTypeDef: superStruct, isFinal: true)
 
                 return [superStruct, subStruct]
             }
@@ -6480,12 +6844,12 @@ struct WasmGCTests {
         let jsProg = buildAndLiftProgram { b in
             let types = b.wasmDefineTypeGroup {
                 let superStructType = b.wasmDefineStructType(
-                    fields: [.init(type: .wasmi32, mutability: true)], indexTypes: [])
+                    fields: [.init(type: .wasmi32, mutability: true)])
                 let subStructType = b.wasmDefineStructType(
                     fields: [
                         .init(type: .wasmi32, mutability: true),
                         .init(type: .wasmi64, mutability: true),
-                    ], indexTypes: [], superTypeDef: superStructType)
+                    ], superTypeDef: superStructType)
 
                 // Parameters are contravariant, return types are covariant.
                 // Super signature: [ref subStruct] => [ref superStruct]
@@ -6560,7 +6924,7 @@ struct WasmGCTests {
             let types = b.wasmDefineTypeGroup {
                 let structOfi32 = b.wasmDefineStructType(
                     fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
-                    indexTypes: [])
+                )
                 let structOfStruct = b.wasmDefineStructType(
                     fields: [
                         WasmStructTypeDescription.Field(
@@ -6609,7 +6973,7 @@ struct WasmGCTests {
             let types = b.wasmDefineTypeGroup {
                 let structOfi32 = b.wasmDefineStructType(
                     fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
-                    indexTypes: [])
+                )
                 let structOfStruct = b.wasmDefineStructType(
                     fields: [
                         WasmStructTypeDescription.Field(
@@ -6661,7 +7025,7 @@ struct WasmGCTests {
                             WasmStructTypeDescription.Field(type: .wasmPackedI8, mutability: true),
                             WasmStructTypeDescription.Field(type: .wasmPackedI8, mutability: true),
                             WasmStructTypeDescription.Field(type: .wasmPackedI16, mutability: true),
-                        ], indexTypes: [])
+                        ])
                 ]
             }[0]
 
@@ -6789,7 +7153,7 @@ struct WasmGCTests {
                 [
                     b.wasmDefineStructType(
                         fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
-                        indexTypes: [])
+                    )
                 ]
             }[0]
 
@@ -7096,7 +7460,8 @@ struct WasmGCTests {
         testForOutput(program: jsProg, runner: runner, outputString: "1\n0\n")
     }
 
-    func refNullAbstractTypes(sharedRef: Bool) throws {
+    @Test(arguments: [true, false])
+    func testRefNullAbstractTypes(sharedRef: Bool) throws {
         let runner = JavaScriptExecutor(withArguments: ["--experimental-wasm-shared"])!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
         let fuzzer = makeMockFuzzer(config: liveTestConfig, environment: JavaScriptEnvironment())
@@ -7144,14 +7509,6 @@ struct WasmGCTests {
             )
         }
         testForOutput(program: jsProg, runner: runner, outputString: expected)
-    }
-
-    @Test func testRefNullAbstractTypesSharedRef() throws {
-        try refNullAbstractTypes(sharedRef: true)
-    }
-
-    @Test func testRefNullAbstractTypesUnsharedRef() throws {
-        try refNullAbstractTypes(sharedRef: false)
     }
 
     @Test func testRefEq() throws {
@@ -7235,7 +7592,8 @@ struct WasmGCTests {
         testForOutput(program: jsProg, runner: runner, outputString: "42\ncaught exception\n")
     }
 
-    func i31Ref(shared: Bool) throws {
+    @Test(arguments: [true, false])
+    func testi31Ref(shared: Bool) throws {
         let runner = JavaScriptExecutor(withArguments: ["--experimental-wasm-shared"])!
         let liveTestConfig = Configuration(logLevel: .error, enableInspection: true)
         let fuzzer = makeMockFuzzer(config: liveTestConfig, environment: JavaScriptEnvironment())
@@ -7278,14 +7636,6 @@ struct WasmGCTests {
         }
         testForOutput(
             program: jsProg, runner: runner, outputString: "42\n-42\n42,42\n-42,2147483606\n")
-    }
-
-    @Test func testi31RefShared() throws {
-        try i31Ref(shared: true)
-    }
-
-    @Test func testi31RefUnshared() throws {
-        try i31Ref(shared: false)
     }
 
     @Test func testExternAnyConversions() throws {
@@ -7631,7 +7981,7 @@ struct WasmGCTests {
             let structType = b.wasmDefineTypeGroup {
                 b.wasmDefineStructType(
                     fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
-                    indexTypes: [])
+                )
             }[0]
 
             let module = b.buildWasmModule { wasmModule in
@@ -7696,7 +8046,7 @@ struct WasmGCTests {
             let structType = b.wasmDefineTypeGroup {
                 b.wasmDefineStructType(
                     fields: [WasmStructTypeDescription.Field(type: .wasmi32, mutability: true)],
-                    indexTypes: [])
+                )
             }[0]
 
             let module = b.buildWasmModule { wasmModule in
@@ -7894,7 +8244,7 @@ struct WasmGCTests {
 
             let typeGroupA = b.wasmDefineTypeGroup {
                 let superStruct = b.wasmDefineStructType(
-                    fields: [.init(type: .wasmi32, mutability: true)], indexTypes: [])
+                    fields: [.init(type: .wasmi32, mutability: true)])
                 return [superStruct]
             }
             let typeGroupB = b.wasmDefineTypeGroup {
@@ -7902,7 +8252,7 @@ struct WasmGCTests {
                     fields: [
                         .init(type: .wasmi32, mutability: true),
                         .init(type: .wasmi64, mutability: true),
-                    ], indexTypes: [], superTypeDef: typeGroupA[0])
+                    ], superTypeDef: typeGroupA[0])
                 return [subStruct]
             }
 

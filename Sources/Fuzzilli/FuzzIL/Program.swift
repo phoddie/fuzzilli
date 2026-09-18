@@ -29,6 +29,14 @@ public final class Program: CustomStringConvertible {
         FuzzILLifter().lift(self, withOptions: [.includeComments, .includeLineNumbers])
     }
 
+    public func checkOrDie(onFailure message: String) {
+        do {
+            try code.check(checkVisibility: false)
+        } catch {
+            fatalError("\(message): \(error)\nFuzzIL program:\n\(description)")
+        }
+    }
+
     /// The immutable code of this program.
     public let code: Code
 
@@ -48,7 +56,7 @@ public final class Program: CustomStringConvertible {
 
     /// The current version of the FuzzIL/Protobuf schema.
     /// This version should be bumped whenever a breaking change is made to the protobuf format.
-    public static let protobufVersion: UInt32 = 6
+    public static let protobufVersion: UInt32 = 8
 
     /// Constructs an empty program.
     public init(isBundle: Bool) {

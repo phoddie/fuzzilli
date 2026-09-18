@@ -58,7 +58,9 @@ struct MinimizationPostProcessor {
                     let args = b.randomArguments(forCalling: instr.input(0))
                     guard args.count > 0 else { break }
                     replacementInstruction = Instruction(
-                        CallFunction(numArguments: args.count, isGuarded: op.isGuarded),
+                        CallFunction(
+                            numArguments: args.count, isGuarded: op.isGuarded,
+                            isCallOptional: op.isCallOptional),
                         output: instr.output, inputs: [instr.input(0)] + args)
                 case .callMethod(let op):
                     // (Sometimes) insert random arguments, but only if there are none currently.
@@ -71,7 +73,8 @@ struct MinimizationPostProcessor {
                     replacementInstruction = Instruction(
                         CallMethod(
                             methodName: op.methodName, numArguments: args.count,
-                            isGuarded: op.isGuarded), output: instr.output,
+                            isGuarded: op.isGuarded, isReceiverOptional: op.isReceiverOptional,
+                            isCallOptional: op.isCallOptional), output: instr.output,
                         inputs: [instr.input(0)] + args)
                 case .construct(let op):
                     // (Sometimes) insert random arguments, but only if there are none currently.
@@ -88,7 +91,7 @@ struct MinimizationPostProcessor {
                     if instr.hasAnyVariadicInputs || !b.hasVisibleJsVariables { break }
 
                     let elementType = op.elementGroupName.map {
-                        b.fuzzer.environment.type(ofGroup: $0)
+                        b.fuzzer.environment.type(ofGroupOrEnum: $0)
                     }
                     let initialValues = [Variable](
                         repeating: elementType.map { b.randomVariable(forUseAs: $0) }
@@ -105,8 +108,8 @@ struct MinimizationPostProcessor {
 
                     var elementType = ILType.jsArray
                     if let keyGroup = op.keyGroupName, let valueGroup = op.valueGroupName {
-                        let keyType = b.fuzzer.environment.type(ofGroup: keyGroup)
-                        let valueType = b.fuzzer.environment.type(ofGroup: valueGroup)
+                        let keyType = b.fuzzer.environment.type(ofGroupOrEnum: keyGroup)
+                        let valueType = b.fuzzer.environment.type(ofGroupOrEnum: valueGroup)
                         elementType = ILType.createJsArrayType(ofElementType: keyType | valueType)
                     }
                     let initialValues = [Variable](

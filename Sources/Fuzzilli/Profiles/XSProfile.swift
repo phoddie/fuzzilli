@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import OrderedCollections
+
 /*
 	swift run FuzzilliCli --profile=xs --jobs=8 --storagePath=./results --inspect=history --timeout=100 --resume $MODDABLE/build/bin/mac/debug/xst
 	swift run -c release FuzzilliCli --profile=xs --jobs=8 --storagePath=./results --timeout=100 --resume $MODDABLE/build/bin/mac/debug/xst
 */
- 
+
 private let StressXSGC = CodeGenerator("StressXSGC", inputs: .required(.function())) { b, f in
     let arguments = b.randomArguments(forCalling: f)
 
@@ -76,9 +78,9 @@ private let ModuleSourceGenerator = CodeGenerator("ModuleSourceGenerator") { b i
 private let CompartmentGenerator = CodeGenerator("CompartmentGenerator") { b in
     let compartmentConstructor = b.createNamedVariable(forBuiltin: "Compartment")
 
-    var endowments = [String: Variable]()  // may be used as endowments argument or globalLexicals
-    var moduleMap = [String: Variable]()
-    var options = [String: Variable]()
+    var endowments = OrderedDictionary<String, Variable>()  // may be used as endowments argument or globalLexicals
+    var moduleMap = OrderedDictionary<String, Variable>()
+    var options = OrderedDictionary<String, Variable>()
 
     for _ in 0..<Int.random(in: 1...4) {
         let propertyName = b.randomCustomPropertyName()
@@ -150,7 +152,7 @@ private let TextDecoderGenerator = CodeGenerator("TextDecoderGenerator") { b in
     var args = [Variable]()
     args.append(b.loadString("utf-8"))
     if probability(0.5) {
-        var options = [String: Variable]()
+        var options = OrderedDictionary<String, Variable>()
         options["fatal"] = b.loadBool(probability(0.5))
         options["ignoreBOM"] = b.loadBool(probability(0.5))
         args.append(b.createObject(with: options))
@@ -160,7 +162,7 @@ private let TextDecoderGenerator = CodeGenerator("TextDecoderGenerator") { b in
     let Uint8Array = b.createNamedVariable(forBuiltin: "Uint8Array")
     let buffer = b.construct(Uint8Array, withArgs: [b.loadInt(Int64.random(in: 1...32))])
     if probability(0.5) {
-        var options = [String: Variable]()
+        var options = OrderedDictionary<String, Variable>()
         options["stream"] = b.loadBool(probability(0.5))
         b.callMethod("decode", on: textDecoder, withArgs: [buffer, b.createObject(with: options)])
     } else {
@@ -345,7 +347,7 @@ let jsCompartments = ObjectGroup(
         "globalThis": .object()
     ],
     methods: [  //@@ import/importNow can accept more than strings
-        "import": [.string] => .jsPromise,
+        "import": [.string] => .jsPromise(),
         "importNow": [.string] => .jsAnything,
         // "module"    : [.opt(.string)] => .object(), (currently unavailable)
         "evaluate": [.string] => .jsAnything,
